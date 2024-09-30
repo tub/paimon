@@ -18,11 +18,11 @@
 
 package org.apache.paimon.spark.sql
 
-import org.apache.paimon.spark.PaimonSparkTestBase
+import org.apache.paimon.spark.{PaimonSparkTestBase, PaimonTableTest}
 
 import org.apache.spark.sql.Row
 
-trait MergeIntoNotMatchedBySourceTest extends PaimonSparkTestBase {
+trait MergeIntoNotMatchedBySourceTest extends PaimonSparkTestBase with PaimonTableTest {
 
   import testImplicits._
 
@@ -31,10 +31,7 @@ trait MergeIntoNotMatchedBySourceTest extends PaimonSparkTestBase {
 
       Seq((1, 100, "c11"), (3, 300, "c33")).toDF("a", "b", "c").createOrReplaceTempView("source")
 
-      spark.sql(s"""
-                   |CREATE TABLE target (a INT, b INT, c STRING)
-                   |TBLPROPERTIES ('primary-key'='a', 'bucket'='2')
-                   |""".stripMargin)
+      createTable("target", "a INT, b INT, c STRING", Seq("a"))
       spark.sql("INSERT INTO target values (1, 10, 'c1'), (2, 20, 'c2'), (5, 50, 'c5')")
 
       spark.sql(s"""
@@ -58,10 +55,7 @@ trait MergeIntoNotMatchedBySourceTest extends PaimonSparkTestBase {
 
       Seq((1, 100, "c11"), (3, 300, "c33")).toDF("a", "b", "c").createOrReplaceTempView("source")
 
-      spark.sql(s"""
-                   |CREATE TABLE target (a INT, b INT, c STRING)
-                   |TBLPROPERTIES ('primary-key'='a', 'bucket'='2')
-                   |""".stripMargin)
+      createTable("target", "a INT, b INT, c STRING", Seq("a"))
       spark.sql("INSERT INTO target values (1, 10, 'c1'), (2, 20, 'c2')")
 
       spark.sql(s"""
@@ -89,10 +83,7 @@ trait MergeIntoNotMatchedBySourceTest extends PaimonSparkTestBase {
         .toDF("a", "b", "c1", "c2")
         .createOrReplaceTempView("source")
 
-      spark.sql(s"""
-                   |CREATE TABLE target (a INT, b INT, c STRUCT<c1:STRING, c2:STRING>)
-                   |TBLPROPERTIES ('primary-key'='a', 'bucket'='2')
-                   |""".stripMargin)
+      createTable("target", "a INT, b INT, c STRUCT<c1:STRING, c2:STRING>", Seq("a"))
       spark.sql("INSERT INTO target values (1, 10, struct('x', 'y')), (2, 20, struct('x', 'y'))")
 
       spark.sql(s"""
@@ -118,10 +109,7 @@ trait MergeIntoNotMatchedBySourceTest extends PaimonSparkTestBase {
         .toDF("a", "b", "c")
         .createOrReplaceTempView("source")
 
-      spark.sql(s"""
-                   |CREATE TABLE target (a INT, b INT, c STRING)
-                   |TBLPROPERTIES ('primary-key'='a', 'bucket'='2')
-                   |""".stripMargin)
+      createTable("target", "a INT, b INT, c STRING", Seq("a"))
       spark.sql(
         "INSERT INTO target values (1, 10, 'c1'), (2, 20, 'c2'), (3, 30, 'c3'), (4, 40, 'c4'), (5, 50, 'c5')")
 
@@ -141,6 +129,47 @@ trait MergeIntoNotMatchedBySourceTest extends PaimonSparkTestBase {
                    |INSERT *
                    |WHEN NOT MATCHED BY SOURCE AND a = 2 THEN
                    |UPDATE SET b = b * 10
+                   |WHEN NOT MATCHED BY SOURCE THEN
+                   |DELETE
+                   |""".stripMargin)
+
+      checkAnswer(
+        spark.sql("SELECT * FROM target ORDER BY a, b"),
+        Row(2, 200, "c2") :: Row(3, 300, "c33") :: Row(5, 550, "c5") :: Row(7, 700, "c77") :: Row(
+          9,
+          990,
+          "c99") :: Nil
+      )
+    }
+  }
+
+  test(s"Paimon MergeInto: multiple clauses with not matched by source with alias") {
+    withTable("source", "target") {
+
+      Seq((1, 100, "c11"), (3, 300, "c33"), (5, 500, "c55"), (7, 700, "c77"), (9, 900, "c99"))
+        .toDF("a", "b", "c")
+        .createOrReplaceTempView("source")
+
+      createTable("target", "a INT, b INT, c STRING", Seq("a"))
+      spark.sql(
+        "INSERT INTO target values (1, 10, 'c1'), (2, 20, 'c2'), (3, 30, 'c3'), (4, 40, 'c4'), (5, 50, 'c5')")
+
+      spark.sql(s"""
+                   |MERGE INTO target t
+                   |USING source s
+                   |ON t.a = s.a
+                   |WHEN MATCHED AND t.a = 5 THEN
+                   |UPDATE SET t.b = s.b + t.b
+                   |WHEN MATCHED AND s.c > 'c2' THEN
+                   |UPDATE SET *
+                   |WHEN MATCHED THEN
+                   |DELETE
+                   |WHEN NOT MATCHED AND s.c > 'c9' THEN
+                   |INSERT (t.a, t.b, t.c) VALUES (s.a, s.b * 1.1, s.c)
+                   |WHEN NOT MATCHED THEN
+                   |INSERT *
+                   |WHEN NOT MATCHED BY SOURCE AND t.a = 2 THEN
+                   |UPDATE SET t.b = t.b * 10
                    |WHEN NOT MATCHED BY SOURCE THEN
                    |DELETE
                    |""".stripMargin)

@@ -22,13 +22,17 @@ import org.apache.paimon.Snapshot.CommitKind
 import org.apache.paimon.fs.Path
 import org.apache.paimon.spark.PaimonSparkTestBase
 import org.apache.paimon.table.FileStoreTable
+import org.apache.paimon.table.source.DataSplit
 
+import org.apache.spark.scheduler.{SparkListener, SparkListenerJobEnd, SparkListenerStageCompleted, SparkListenerStageSubmitted}
 import org.apache.spark.sql.{Dataset, Row}
 import org.apache.spark.sql.execution.streaming.MemoryStream
 import org.apache.spark.sql.streaming.StreamTest
 import org.assertj.core.api.Assertions
 
 import java.util
+
+import scala.collection.JavaConverters._
 
 /** Test compact procedure. See [[CompactProcedure]]. */
 abstract class CompactProcedureTestBase extends PaimonSparkTestBase with StreamTest {
@@ -247,6 +251,47 @@ abstract class CompactProcedureTestBase extends PaimonSparkTestBase with StreamT
     }
   }
 
+  test("Paimon Procedure: sort compact with multi-partitions") {
+    Seq("order", "zorder").foreach {
+      orderStrategy =>
+        {
+          withTable("T") {
+            spark.sql(s"""
+                         |CREATE TABLE T (id INT, pt STRING)
+                         |PARTITIONED BY (pt)
+                         |""".stripMargin)
+
+            spark.sql(s"""INSERT INTO T VALUES
+                         |(1, 'p1'), (3, 'p1'),
+                         |(1, 'p2'), (4, 'p2'),
+                         |(3, 'p3'), (2, 'p3'),
+                         |(1, 'p4'), (2, 'p4')
+                         |""".stripMargin)
+
+            spark.sql(s"""INSERT INTO T VALUES
+                         |(4, 'p1'), (2, 'p1'),
+                         |(2, 'p2'), (3, 'p2'),
+                         |(1, 'p3'), (4, 'p3'),
+                         |(3, 'p4'), (4, 'p4')
+                         |""".stripMargin)
+
+            checkAnswer(
+              spark.sql(
+                s"CALL sys.compact(table => 'T', order_strategy => '$orderStrategy', order_by => 'id')"),
+              Seq(true).toDF())
+
+            val result = List(Row(1), Row(2), Row(3), Row(4)).asJava
+            Seq("p1", "p2", "p3", "p4").foreach {
+              pt =>
+                Assertions
+                  .assertThat(spark.sql(s"SELECT id FROM T WHERE pt='$pt'").collect())
+                  .containsExactlyElementsOf(result)
+            }
+          }
+        }
+    }
+  }
+
   test("Paimon Procedure: compact for pk") {
     failAfter(streamingTimeout) {
       withTempDir {
@@ -433,6 +478,15 @@ abstract class CompactProcedureTestBase extends PaimonSparkTestBase with StreamT
     assert(intercept[IllegalArgumentException] {
       spark.sql("CALL sys.compact(table => 'T', where => 'id > 1 AND pt = \"p1\"')")
     }.getMessage.contains("Only partition predicate is supported"))
+
+    assert(intercept[IllegalArgumentException] {
+      spark.sql("CALL sys.compact(table => 'T', order_strategy => 'sort', order_by => 'pt')")
+    }.getMessage.contains("order_by should not contain partition cols"))
+
+    assert(intercept[IllegalArgumentException] {
+      spark.sql(
+        "CALL sys.compact(table => 'T', order_strategy => 'sort', order_by => 'id', partition_idle_time =>'5s')")
+    }.getMessage.contains("sort compact do not support 'partition_idle_time'"))
   }
 
   test("Paimon Procedure: compact with where") {
@@ -479,6 +533,201 @@ abstract class CompactProcedureTestBase extends PaimonSparkTestBase with StreamT
       "(f0=0 AND f1=0 AND f2=0) OR (f0=1 AND f1=1 AND f2=1) OR (f0=1 AND f1=2 AND f2=2) OR (f3=3)"
 
     Assertions.assertThat(where).isEqualTo(whereExpected)
+  }
+
+  test("Paimon Procedure: compact unaware bucket append table with option") {
+    spark.sql(s"""
+                 |CREATE TABLE T (id INT, value STRING, pt STRING)
+                 |TBLPROPERTIES ('bucket'='-1', 'write-only'='true')
+                 |PARTITIONED BY (pt)
+                 |""".stripMargin)
+
+    val table = loadTable("T")
+
+    spark.sql(s"INSERT INTO T VALUES (1, 'a', 'p1'), (2, 'b', 'p2')")
+    spark.sql(s"INSERT INTO T VALUES (3, 'c', 'p1'), (4, 'd', 'p2')")
+    spark.sql(s"INSERT INTO T VALUES (5, 'e', 'p1'), (6, 'f', 'p2')")
+
+    spark.sql(
+      "CALL sys.compact(table => 'T', partitions => 'pt=\"p1\"', options => 'compaction.min.file-num=2,compaction.max.file-num = 3')")
+    Assertions.assertThat(lastSnapshotCommand(table).equals(CommitKind.COMPACT)).isTrue
+    Assertions.assertThat(lastSnapshotId(table)).isEqualTo(4)
+
+    spark.sql(
+      "CALL sys.compact(table => 'T', options => 'compaction.min.file-num=2,compaction.max.file-num = 3')")
+    Assertions.assertThat(lastSnapshotCommand(table).equals(CommitKind.COMPACT)).isTrue
+    Assertions.assertThat(lastSnapshotId(table)).isEqualTo(5)
+
+    // compact condition no longer met
+    spark.sql(s"CALL sys.compact(table => 'T')")
+    Assertions.assertThat(lastSnapshotId(table)).isEqualTo(5)
+
+    checkAnswer(
+      spark.sql(s"SELECT * FROM T ORDER BY id"),
+      Row(1, "a", "p1") :: Row(2, "b", "p2") :: Row(3, "c", "p1") :: Row(4, "d", "p2") ::
+        Row(5, "e", "p1") :: Row(6, "f", "p2") :: Nil)
+  }
+
+  test("Paimon Procedure: compact with partition_idle_time for pk table") {
+    Seq(1, -1).foreach(
+      bucket => {
+        withTable("T") {
+          val dynamicBucketArgs = if (bucket == -1) " ,'dynamic-bucket.initial-buckets'='1'" else ""
+          spark.sql(
+            s"""
+               |CREATE TABLE T (id INT, value STRING, dt STRING, hh INT)
+               |TBLPROPERTIES ('primary-key'='id, dt, hh', 'bucket'='$bucket', 'write-only'='true'$dynamicBucketArgs)
+               |PARTITIONED BY (dt, hh)
+               |""".stripMargin)
+
+          val table = loadTable("T")
+
+          spark.sql(s"INSERT INTO T VALUES (1, '1', '2024-01-01', 0), (2, '2', '2024-01-01', 1)")
+          spark.sql(s"INSERT INTO T VALUES (5, '5', '2024-01-02', 0), (6, '6', '2024-01-02', 1)")
+          spark.sql(s"INSERT INTO T VALUES (3, '3', '2024-01-01', 0), (4, '4', '2024-01-01', 1)")
+          spark.sql(s"INSERT INTO T VALUES (7, '7', '2024-01-02', 0), (8, '8', '2024-01-02', 1)")
+
+          Thread.sleep(10000);
+          spark.sql(s"INSERT INTO T VALUES (9, '9', '2024-01-01', 0), (10, '10', '2024-01-02', 0)")
+
+          spark.sql("CALL sys.compact(table => 'T', partition_idle_time => '10s')")
+          val dataSplits = table.newSnapshotReader.read.dataSplits.asScala.toList
+          Assertions
+            .assertThat(dataSplits.size)
+            .isEqualTo(4)
+          Assertions.assertThat(lastSnapshotCommand(table).equals(CommitKind.COMPACT)).isTrue
+          for (dataSplit: DataSplit <- dataSplits) {
+            if (dataSplit.partition().getInt(1) == 0) {
+              Assertions
+                .assertThat(dataSplit.dataFiles().size())
+                .isEqualTo(3)
+            } else {
+              Assertions
+                .assertThat(dataSplit.dataFiles().size())
+                .isEqualTo(1)
+            }
+          }
+        }
+      })
+
+  }
+
+  test("Paimon Procedure: compact with partition_idle_time for unaware bucket append table") {
+    spark.sql(
+      s"""
+         |CREATE TABLE T (id INT, value STRING, dt STRING, hh INT)
+         |TBLPROPERTIES ('bucket'='-1', 'write-only'='true', 'compaction.min.file-num'='2', 'compaction.max.file-num'='2')
+         |PARTITIONED BY (dt, hh)
+         |""".stripMargin)
+
+    val table = loadTable("T")
+
+    spark.sql(s"INSERT INTO T VALUES (1, '1', '2024-01-01', 0), (2, '2', '2024-01-01', 1)")
+    spark.sql(s"INSERT INTO T VALUES (5, '5', '2024-01-02', 0), (6, '6', '2024-01-02', 1)")
+    spark.sql(s"INSERT INTO T VALUES (3, '3', '2024-01-01', 0), (4, '4', '2024-01-01', 1)")
+    spark.sql(s"INSERT INTO T VALUES (7, '7', '2024-01-02', 0), (8, '8', '2024-01-02', 1)")
+
+    Thread.sleep(10000);
+    spark.sql(s"INSERT INTO T VALUES (9, '9', '2024-01-01', 0), (10, '10', '2024-01-02', 0)")
+
+    spark.sql("CALL sys.compact(table => 'T', partition_idle_time => '10s')")
+    val dataSplits = table.newSnapshotReader.read.dataSplits.asScala.toList
+    Assertions
+      .assertThat(dataSplits.size)
+      .isEqualTo(4)
+    Assertions.assertThat(lastSnapshotCommand(table).equals(CommitKind.COMPACT)).isTrue
+    for (dataSplit: DataSplit <- dataSplits) {
+      if (dataSplit.partition().getInt(1) == 0) {
+        Assertions
+          .assertThat(dataSplit.dataFiles().size())
+          .isEqualTo(3)
+      } else {
+        Assertions
+          .assertThat(dataSplit.dataFiles().size())
+          .isEqualTo(1)
+      }
+    }
+  }
+
+  test("Paimon Procedure: test aware-bucket compaction read parallelism") {
+    spark.sql(s"""
+                 |CREATE TABLE T (id INT, value STRING)
+                 |TBLPROPERTIES ('primary-key'='id', 'bucket'='3', 'write-only'='true')
+                 |""".stripMargin)
+
+    val table = loadTable("T")
+    for (i <- 1 to 10) {
+      sql(s"INSERT INTO T VALUES ($i, '$i')")
+    }
+    assertResult(10)(table.snapshotManager().snapshotCount())
+
+    val buckets = table.newSnapshotReader().bucketEntries().asScala.map(_.bucket()).distinct.size
+    assertResult(3)(buckets)
+
+    val taskBuffer = scala.collection.mutable.ListBuffer.empty[Int]
+    val listener = new SparkListener {
+      override def onStageSubmitted(stageSubmitted: SparkListenerStageSubmitted): Unit = {
+        taskBuffer += stageSubmitted.stageInfo.numTasks
+      }
+    }
+
+    try {
+      spark.sparkContext.addSparkListener(listener)
+
+      // spark.default.parallelism cannot be change in spark session
+      // sparkParallelism is 2, bucket is 3, use 2 as the read parallelism
+      spark.conf.set("spark.sql.shuffle.partitions", 2)
+      spark.sql("CALL sys.compact(table => 'T')")
+
+      // sparkParallelism is 5, bucket is 3, use 3 as the read parallelism
+      spark.conf.set("spark.sql.shuffle.partitions", 5)
+      spark.sql("CALL sys.compact(table => 'T')")
+
+      assertResult(Seq(2, 3))(taskBuffer)
+    } finally {
+      spark.sparkContext.removeSparkListener(listener)
+    }
+  }
+
+  test("Paimon Procedure: test unaware-bucket compaction read parallelism") {
+    spark.sql(s"""
+                 |CREATE TABLE T (id INT, value STRING)
+                 |TBLPROPERTIES ('bucket'='-1', 'write-only'='true')
+                 |""".stripMargin)
+
+    val table = loadTable("T")
+    for (i <- 1 to 12) {
+      sql(s"INSERT INTO T VALUES ($i, '$i')")
+    }
+    assertResult(12)(table.snapshotManager().snapshotCount())
+
+    val buckets = table.newSnapshotReader().bucketEntries().asScala.map(_.bucket()).distinct.size
+    // only has bucket-0
+    assertResult(1)(buckets)
+
+    val taskBuffer = scala.collection.mutable.ListBuffer.empty[Int]
+    val listener = new SparkListener {
+      override def onStageSubmitted(stageSubmitted: SparkListenerStageSubmitted): Unit = {
+        taskBuffer += stageSubmitted.stageInfo.numTasks
+      }
+    }
+
+    try {
+      spark.sparkContext.addSparkListener(listener)
+
+      // spark.default.parallelism cannot be change in spark session
+      // sparkParallelism is 2, task groups is 6, use 2 as the read parallelism
+      spark.conf.set("spark.sql.shuffle.partitions", 2)
+      spark.sql("CALL sys.compact(table => 'T', options => 'compaction.max.file-num=2')")
+
+      // sparkParallelism is 5, task groups is 3, use 3 as the read parallelism
+      spark.conf.set("spark.sql.shuffle.partitions", 5)
+      spark.sql("CALL sys.compact(table => 'T', options => 'compaction.max.file-num=2')")
+
+      assertResult(Seq(2, 3))(taskBuffer)
+    } finally {
+      spark.sparkContext.removeSparkListener(listener)
+    }
   }
 
   def lastSnapshotCommand(table: FileStoreTable): CommitKind = {

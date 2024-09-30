@@ -22,6 +22,7 @@ import org.apache.paimon.CoreOptions
 import org.apache.paimon.options.Options
 import org.apache.paimon.spark.schema.PaimonMetadataColumn
 import org.apache.paimon.table.{DataTable, FileStoreTable, Table}
+import org.apache.paimon.utils.StringUtils
 
 import org.apache.spark.sql.connector.catalog.{MetadataColumn, SupportsMetadataColumns, SupportsRead, SupportsWrite, TableCapability, TableCatalog}
 import org.apache.spark.sql.connector.expressions.{Expressions, Transform}
@@ -44,12 +45,12 @@ case class SparkTable(table: Table)
 
   def getTable: Table = table
 
-  override def name: String = table.name
+  override def name: String = table.fullName
 
   override lazy val schema: StructType = SparkTypeUtils.fromPaimonRowType(table.rowType)
 
   override def partitioning: Array[Transform] = {
-    table.partitionKeys().asScala.map(p => Expressions.identity(p)).toArray
+    table.partitionKeys().asScala.map(p => Expressions.identity(StringUtils.quote(p))).toArray
   }
 
   override def properties: JMap[String, String] = {
@@ -80,7 +81,13 @@ case class SparkTable(table: Table)
   }
 
   override def metadataColumns: Array[MetadataColumn] = {
-    Array[MetadataColumn](PaimonMetadataColumn.FILE_PATH, PaimonMetadataColumn.ROW_INDEX)
+    val partitionType = SparkTypeUtils.toSparkPartitionType(table)
+    Array[MetadataColumn](
+      PaimonMetadataColumn.FILE_PATH,
+      PaimonMetadataColumn.ROW_INDEX,
+      PaimonMetadataColumn.PARTITION(partitionType),
+      PaimonMetadataColumn.BUCKET
+    )
   }
 
   override def newScanBuilder(options: CaseInsensitiveStringMap): ScanBuilder = {

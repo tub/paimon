@@ -19,6 +19,7 @@
 package org.apache.paimon.append;
 
 import org.apache.paimon.CoreOptions;
+import org.apache.paimon.compression.CompressOptions;
 import org.apache.paimon.data.BinaryRow;
 import org.apache.paimon.data.BinaryString;
 import org.apache.paimon.data.GenericRow;
@@ -519,7 +520,9 @@ public class AppendOnlyWriterTest {
     private DataFilePathFactory createPathFactory() {
         return new DataFilePathFactory(
                 new Path(tempDir + "/dt=" + PART + "/bucket-0"),
-                CoreOptions.FILE_FORMAT.defaultValue().toString());
+                CoreOptions.FILE_FORMAT.defaultValue().toString(),
+                CoreOptions.DATA_FILE_PREFIX.defaultValue(),
+                CoreOptions.CHANGELOG_FILE_PREFIX.defaultValue());
     }
 
     private AppendOnlyWriter createEmptyWriter(long targetFileSize) {
@@ -531,10 +534,29 @@ public class AppendOnlyWriterTest {
                 .getLeft();
     }
 
+    private AppendOnlyWriter createEmptyWriterWithoutIoManager(
+            long targetFileSize, boolean spillable) {
+        return createWriter(
+                        targetFileSize,
+                        false,
+                        true,
+                        spillable,
+                        false,
+                        Collections.emptyList(),
+                        new CountDownLatch(0))
+                .getLeft();
+    }
+
     private Pair<AppendOnlyWriter, List<DataFileMeta>> createWriter(
             long targetFileSize, boolean forceCompact, List<DataFileMeta> scannedFiles) {
         return createWriter(
-                targetFileSize, forceCompact, true, true, scannedFiles, new CountDownLatch(0));
+                targetFileSize,
+                forceCompact,
+                true,
+                true,
+                true,
+                scannedFiles,
+                new CountDownLatch(0));
     }
 
     private Pair<AppendOnlyWriter, List<DataFileMeta>> createWriter(
@@ -548,6 +570,7 @@ public class AppendOnlyWriterTest {
                 forceCompact,
                 useWriteBuffer,
                 spillable,
+                true,
                 scannedFiles,
                 new CountDownLatch(0));
     }
@@ -557,7 +580,7 @@ public class AppendOnlyWriterTest {
             boolean forceCompact,
             List<DataFileMeta> scannedFiles,
             CountDownLatch latch) {
-        return createWriter(targetFileSize, forceCompact, false, false, scannedFiles, latch);
+        return createWriter(targetFileSize, forceCompact, false, false, true, scannedFiles, latch);
     }
 
     private Pair<AppendOnlyWriter, List<DataFileMeta>> createWriter(
@@ -565,15 +588,17 @@ public class AppendOnlyWriterTest {
             boolean forceCompact,
             boolean useWriteBuffer,
             boolean spillable,
+            boolean hasIoManager,
             List<DataFileMeta> scannedFiles,
             CountDownLatch latch) {
         FileFormat fileFormat = FileFormat.fromIdentifier(AVRO, new Options());
         LinkedList<DataFileMeta> toCompact = new LinkedList<>(scannedFiles);
-        AppendOnlyCompactManager compactManager =
-                new AppendOnlyCompactManager(
+        BucketedAppendCompactManager compactManager =
+                new BucketedAppendCompactManager(
                         Executors.newSingleThreadScheduledExecutor(
                                 new ExecutorThreadFactory("compaction-thread")),
                         toCompact,
+                        null,
                         MIN_FILE_NUM,
                         MAX_FILE_NUM,
                         targetFileSize,
@@ -589,7 +614,7 @@ public class AppendOnlyWriterTest {
         AppendOnlyWriter writer =
                 new AppendOnlyWriter(
                         LocalFileIO.create(),
-                        IOManager.create(tempDir.toString()),
+                        hasIoManager ? IOManager.create(tempDir.toString()) : null,
                         SCHEMA_ID,
                         fileFormat,
                         targetFileSize,
@@ -603,11 +628,12 @@ public class AppendOnlyWriterTest {
                         useWriteBuffer,
                         spillable,
                         CoreOptions.FILE_COMPRESSION.defaultValue(),
-                        CoreOptions.SPILL_COMPRESSION.defaultValue(),
+                        CompressOptions.defaultOptions(),
                         StatsCollectorFactories.createStatsFactories(
                                 options, AppendOnlyWriterTest.SCHEMA.getFieldNames()),
                         MemorySize.MAX_VALUE,
-                        new FileIndexOptions());
+                        new FileIndexOptions(),
+                        true);
         writer.setMemoryPool(
                 new HeapMemorySegmentPool(options.writeBufferSize(), options.pageSize()));
         return Pair.of(writer, compactManager.allFiles());

@@ -25,7 +25,7 @@ import org.apache.paimon.types.DataTypes;
 import org.apache.paimon.types.RowType;
 import org.apache.paimon.utils.JsonSerdeUtil;
 
-import com.ververica.cdc.connectors.postgres.source.config.PostgresSourceOptions;
+import org.apache.flink.cdc.connectors.postgres.source.config.PostgresSourceOptions;
 import org.apache.flink.core.execution.JobClient;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -326,14 +326,12 @@ public class PostgresSyncTableActionITCase extends PostgresActionITCaseBase {
                         .build();
         JobClient client = runActionWithDefaultEnv(action);
 
-        try (Statement statement = getStatement(DATABASE_NAME)) {
-            testAllTypesImpl(statement);
-        }
+        testAllTypesImpl();
 
         client.cancel().get();
     }
 
-    private void testAllTypesImpl(Statement statement) throws Exception {
+    private void testAllTypesImpl() throws Exception {
         RowType rowType =
                 RowType.of(
                         new DataType[] {
@@ -422,7 +420,7 @@ public class PostgresSyncTableActionITCase extends PostgresActionITCaseBase {
                                 + "19439, "
                                 + "2023-03-23T14:30:05, 2023-03-23T00:00, "
                                 + "36803000, 36803000, "
-                                + "Paimon, Apache Paimon, Apache Paimon PostgreSQL Test Data, "
+                                + "Paimon    , Apache Paimon, Apache Paimon PostgreSQL Test Data, "
                                 + "[98, 121, 116, 101, 115], "
                                 + "{\"a\": \"b\"}, "
                                 + "[\"item1\", \"item2\"]"

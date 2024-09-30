@@ -31,7 +31,7 @@ import java.util.Set;
  * overriding mysql conf file, i.e. my.cnf.
  *
  * <p>Copied from <a
- * href="https://github.com/ververica/flink-cdc-connectors/blob/master/flink-connector-mysql-cdc/src/test/java/com/ververica/cdc/connectors/mysql/testutils/MySqlContainer.java">ververica
+ * href="https://github.com/apache/flink-cdc/blob/master/flink-cdc-connect/flink-cdc-source-connectors/flink-connector-mysql-cdc/src/test/java/org/apache/flink/cdc/connectors/mysql/testutils/MySqlContainer.java">flink-cdc
  * / flink-cdc-connectors</a>.
  */
 @SuppressWarnings("rawtypes")
@@ -54,18 +54,18 @@ public class MySqlContainer extends JdbcDatabaseContainer {
     }
 
     @Override
-    protected Set<Integer> getLivenessCheckPorts() {
+    public Set<Integer> getLivenessCheckPortNumbers() {
         return new HashSet<>(getMappedPort(MYSQL_PORT));
     }
 
     @Override
     protected void configure() {
         optionallyMapResourceParameterAsVolume(
-                MY_CNF_CONFIG_OVERRIDE_PARAM_NAME, "/etc/mysql/", "mysql-default-conf");
+                MY_CNF_CONFIG_OVERRIDE_PARAM_NAME, "/etc/mysql/", "mysql-default-conf", null);
 
         if (parameters.containsKey(SETUP_SQL_PARAM_NAME)) {
             optionallyMapResourceParameterAsVolume(
-                    SETUP_SQL_PARAM_NAME, "/docker-entrypoint-initdb.d/", "N/A");
+                    SETUP_SQL_PARAM_NAME, "/docker-entrypoint-initdb.d/", "N/A", null);
         }
 
         addEnv("MYSQL_DATABASE", databaseName);

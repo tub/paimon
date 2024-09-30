@@ -62,25 +62,39 @@ INSERT OVERWRITE my_table PARTITION (key1 = value1, key2 = value2, ...) SELECT .
 
 ### Dynamic Overwrite
 
-Spark's default overwrite mode is static partition overwrite. To enable dynamic overwritten needs these configs below:
+Spark's default overwrite mode is `static` partition overwrite. To enable dynamic overwritten you need to set the Spark session configuration `spark.sql.sources.partitionOverwriteMode` to `dynamic`
 
-```text
---conf spark.sql.extensions=org.apache.paimon.spark.extensions.PaimonSparkSessionExtensions
-```
-
-Note : If `spark.sql.sources.partitionOverwriteMode` is set to `dynamic` by default in Spark,
-in order to ensure that the insert overwrite function of the Paimon table can be used normally,
-`spark.sql.extensions` should be set to `org.apache.paimon.spark.extensions.PaimonSparkSessionExtensions`.
+For example:
 
 ```sql
--- MyTable is a Partitioned Table
+CREATE TABLE my_table (id INT, pt STRING) PARTITIONED BY (pt);
+INSERT INTO my_table VALUES (1, 'p1'), (2, 'p2');
 
--- Static overwrite (Overwrite whole table)
-INSERT OVERWRITE my_table SELECT ...
+-- Static overwrite (Overwrite the whole table)
+INSERT OVERWRITE my_table VALUES (3, 'p1');
 
--- Dynamic overwrite
-                             SET spark.sql.sources.partitionOverwriteMode=dynamic;
-INSERT OVERWRITE my_table SELECT ...
+SELECT * FROM my_table;
+/*
++---+---+
+| id| pt|
++---+---+
+|  3| p1|
++---+---+
+*/
+
+-- Dynamic overwrite (Only overwrite pt='p1')
+SET spark.sql.sources.partitionOverwriteMode=dynamic;
+INSERT OVERWRITE my_table VALUES (3, 'p1');
+
+SELECT * FROM my_table;
+/*
++---+---+
+| id| pt|
++---+---+
+|  2| p2|
+|  3| p1|
++---+---+
+*/
 ```
 
 ## Truncate tables
@@ -90,12 +104,6 @@ TRUNCATE TABLE my_table;
 ```
 
 ## Updating tables
-
-To enable update needs these configs below:
-
-```text
---conf spark.sql.extensions=org.apache.paimon.spark.extensions.PaimonSparkSessionExtensions
-```
 
 spark supports update PrimitiveType and StructType, for example:
 
@@ -119,12 +127,6 @@ UPDATE t SET s.c2 = 'a_new' WHERE s.c1 = 1;
 
 ## Deleting from table
 
-To enable delete needs these configs below:
-
-```text
---conf spark.sql.extensions=org.apache.paimon.spark.extensions.PaimonSparkSessionExtensions
-```
-
 ```sql
 DELETE FROM my_table WHERE currency = 'UNKNOWN';
 ```
@@ -134,10 +136,9 @@ DELETE FROM my_table WHERE currency = 'UNKNOWN';
 Paimon currently supports Merge Into syntax in Spark 3+, which allow a set of updates, insertions and deletions based on a source table in a single commit.
 
 {{< hint into >}}
-1. This only work with primary-key table.
-2. In update clause, to update primary key columns is not supported.
-3. `WHEN NOT MATCHED BY SOURCE` syntax is not supported.
-   {{< /hint >}}
+1. In update clause, to update primary key columns is not supported.
+2. `WHEN NOT MATCHED BY SOURCE` syntax is not supported.
+{{< /hint >}}
 
 **Example: One**
 
@@ -195,7 +196,7 @@ Paimon Structured Streaming only supports the two `append` and `complete` modes.
 // Create a paimon table if not exists.
 spark.sql(s"""
            |CREATE TABLE T (k INT, v STRING)
-           |TBLPROPERTIES ('primary-key'='a', 'bucket'='3')
+           |TBLPROPERTIES ('primary-key'='k', 'bucket'='3')
            |""".stripMargin)
 
 // Here we use MemoryStream to fake a streaming source.

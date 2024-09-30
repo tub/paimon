@@ -244,7 +244,10 @@ public class DebeziumSchemaUtils {
                 throw new IllegalArgumentException(
                         String.format("Failed to convert %s to geometry JSON.", rawValue), e);
             }
-        } else {
+        } else if ((origin instanceof GenericData.Record)
+                || (origin instanceof GenericData.Array)
+                || (origin instanceof Map)
+                || (origin instanceof List)) {
             Object convertedObject = convertAvroObjectToJsonCompatible(origin);
             try {
                 transformed = OBJECT_MAPPER.writer().writeValueAsString(convertedObject);
@@ -364,6 +367,7 @@ public class DebeziumSchemaUtils {
                 return DataTypes.INT();
             case "int64":
                 return DataTypes.BIGINT();
+            case "float":
             case "float32":
             case "float64":
                 return DataTypes.FLOAT();

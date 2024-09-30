@@ -32,6 +32,7 @@ import org.apache.paimon.utils.TagManager;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.util.List;
@@ -47,21 +48,21 @@ public class ExpireSnapshotsImpl implements ExpireSnapshots {
     private final ConsumerManager consumerManager;
     private final SnapshotDeletion snapshotDeletion;
     private final TagManager tagManager;
-    private final boolean cleanEmptyDirectories;
 
     private ExpireConfig expireConfig;
 
     public ExpireSnapshotsImpl(
             SnapshotManager snapshotManager,
             SnapshotDeletion snapshotDeletion,
-            TagManager tagManager,
-            boolean cleanEmptyDirectories) {
+            TagManager tagManager) {
         this.snapshotManager = snapshotManager;
         this.consumerManager =
-                new ConsumerManager(snapshotManager.fileIO(), snapshotManager.tablePath());
+                new ConsumerManager(
+                        snapshotManager.fileIO(),
+                        snapshotManager.tablePath(),
+                        snapshotManager.branch());
         this.snapshotDeletion = snapshotDeletion;
         this.tagManager = tagManager;
-        this.cleanEmptyDirectories = cleanEmptyDirectories;
         this.expireConfig = ExpireConfig.builder().build();
     }
 
@@ -162,11 +163,17 @@ public class ExpireSnapshotsImpl implements ExpireSnapshots {
             if (LOG.isDebugEnabled()) {
                 LOG.debug("Ready to delete merge tree files not used by snapshot #" + id);
             }
-            Snapshot snapshot = snapshotManager.snapshot(id);
+            Snapshot snapshot;
+            try {
+                snapshot = snapshotManager.tryGetSnapshot(id);
+            } catch (FileNotFoundException e) {
+                beginInclusiveId = id + 1;
+                continue;
+            }
             // expire merge tree files and collect changed buckets
             Predicate<ManifestEntry> skipper;
             try {
-                skipper = snapshotDeletion.dataFileSkipper(taggedSnapshots, id);
+                skipper = snapshotDeletion.createDataFileSkipperForTags(taggedSnapshots, id);
             } catch (Exception e) {
                 LOG.info(
                         String.format(
@@ -185,7 +192,13 @@ public class ExpireSnapshotsImpl implements ExpireSnapshots {
                 if (LOG.isDebugEnabled()) {
                     LOG.debug("Ready to delete changelog files from snapshot #" + id);
                 }
-                Snapshot snapshot = snapshotManager.snapshot(id);
+                Snapshot snapshot;
+                try {
+                    snapshot = snapshotManager.tryGetSnapshot(id);
+                } catch (FileNotFoundException e) {
+                    beginInclusiveId = id + 1;
+                    continue;
+                }
                 if (snapshot.changelogManifestList() != null) {
                     snapshotDeletion.deleteAddedDataFiles(snapshot.changelogManifestList());
                 }
@@ -194,13 +207,11 @@ public class ExpireSnapshotsImpl implements ExpireSnapshots {
 
         // data files and changelog files in bucket directories has been deleted
         // then delete changed bucket directories if they are empty
-        if (cleanEmptyDirectories) {
-            snapshotDeletion.cleanDataDirectories();
-        }
+        snapshotDeletion.cleanEmptyDirectories();
 
         // delete manifests and indexFiles
         List<Snapshot> skippingSnapshots =
-                TagManager.findOverlappedSnapshots(
+                SnapshotManager.findOverlappedSnapshots(
                         taggedSnapshots, beginInclusiveId, endExclusiveId);
         skippingSnapshots.add(snapshotManager.snapshot(endExclusiveId));
         Set<String> skippingSet = snapshotDeletion.manifestSkippingSet(skippingSnapshots);
@@ -209,7 +220,13 @@ public class ExpireSnapshotsImpl implements ExpireSnapshots {
                 LOG.debug("Ready to delete manifests in snapshot #" + id);
             }
 
-            Snapshot snapshot = snapshotManager.snapshot(id);
+            Snapshot snapshot;
+            try {
+                snapshot = snapshotManager.tryGetSnapshot(id);
+            } catch (FileNotFoundException e) {
+                beginInclusiveId = id + 1;
+                continue;
+            }
             snapshotDeletion.cleanUnusedManifests(snapshot, skippingSet);
             if (expireConfig.isChangelogDecoupled()) {
                 commitChangelog(new Changelog(snapshot));

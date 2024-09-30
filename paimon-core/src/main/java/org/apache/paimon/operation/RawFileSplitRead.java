@@ -37,6 +37,7 @@ import org.apache.paimon.mergetree.compact.ConcatRecordReader;
 import org.apache.paimon.partition.PartitionUtils;
 import org.apache.paimon.predicate.Predicate;
 import org.apache.paimon.reader.EmptyRecordReader;
+import org.apache.paimon.reader.ReaderSupplier;
 import org.apache.paimon.reader.RecordReader;
 import org.apache.paimon.schema.IndexCastMapping;
 import org.apache.paimon.schema.SchemaEvolutionUtil;
@@ -46,6 +47,7 @@ import org.apache.paimon.table.source.DataSplit;
 import org.apache.paimon.types.RowType;
 import org.apache.paimon.utils.BulkFormatMapping;
 import org.apache.paimon.utils.FileStorePathFactory;
+import org.apache.paimon.utils.IOExceptionSupplier;
 import org.apache.paimon.utils.Pair;
 import org.apache.paimon.utils.Projection;
 
@@ -57,10 +59,11 @@ import javax.annotation.Nullable;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 
+import static org.apache.paimon.predicate.PredicateBuilder.excludePredicateWithFields;
 import static org.apache.paimon.predicate.PredicateBuilder.splitAnd;
 
 /** A {@link SplitRead} to read raw file directly from {@link DataSplit}. */
@@ -127,25 +130,40 @@ public class RawFileSplitRead implements SplitRead<InternalRow> {
 
     @Override
     public RecordReader<InternalRow> createReader(DataSplit split) throws IOException {
-        DataFilePathFactory dataFilePathFactory =
-                pathFactory.createDataFilePathFactory(split.partition(), split.bucket());
-        List<ConcatRecordReader.ReaderSupplier<InternalRow>> suppliers = new ArrayList<>();
         if (split.beforeFiles().size() > 0) {
-            LOG.info("Ignore split before files: " + split.beforeFiles());
+            LOG.info("Ignore split before files: {}", split.beforeFiles());
         }
 
+        List<DataFileMeta> files = split.dataFiles();
         DeletionVector.Factory dvFactory =
-                DeletionVector.factory(
-                        fileIO, split.dataFiles(), split.deletionFiles().orElse(null));
+                DeletionVector.factory(fileIO, files, split.deletionFiles().orElse(null));
+        List<IOExceptionSupplier<DeletionVector>> dvFactories = new ArrayList<>();
+        for (DataFileMeta file : files) {
+            dvFactories.add(() -> dvFactory.create(file.fileName()).orElse(null));
+        }
+        return createReader(split.partition(), split.bucket(), split.dataFiles(), dvFactories);
+    }
 
-        for (DataFileMeta file : split.dataFiles()) {
+    public RecordReader<InternalRow> createReader(
+            BinaryRow partition,
+            int bucket,
+            List<DataFileMeta> files,
+            @Nullable List<IOExceptionSupplier<DeletionVector>> dvFactories)
+            throws IOException {
+        DataFilePathFactory dataFilePathFactory =
+                pathFactory.createDataFilePathFactory(partition, bucket);
+        List<ReaderSupplier<InternalRow>> suppliers = new ArrayList<>();
+
+        for (int i = 0; i < files.size(); i++) {
+            DataFileMeta file = files.get(i);
             String formatIdentifier = DataFilePathFactory.formatIdentifier(file.fileName());
             RawFileBulkFormatMapping bulkFormatMapping =
                     bulkFormatMappings.computeIfAbsent(
                             new FormatKey(file.schemaId(), formatIdentifier),
                             this::createBulkFormatMapping);
 
-            BinaryRow partition = split.partition();
+            IOExceptionSupplier<DeletionVector> dvFactory =
+                    dvFactories == null ? null : dvFactories.get(i);
             suppliers.add(
                     () ->
                             createFileReader(
@@ -181,6 +199,9 @@ public class RawFileSplitRead implements SplitRead<InternalRow> {
                         ? filters
                         : SchemaEvolutionUtil.createDataFilters(
                                 tableSchema.fields(), dataSchema.fields(), filters);
+        // Skip pushing down partition filters to reader
+        List<Predicate> nonPartitionFilters =
+                excludePredicateWithFields(dataFilters, new HashSet<>(dataSchema.partitionKeys()));
 
         Pair<int[], RowType> partitionPair = null;
         if (!dataSchema.partitionKeys().isEmpty()) {
@@ -205,7 +226,7 @@ public class RawFileSplitRead implements SplitRead<InternalRow> {
                 partitionPair,
                 formatDiscover
                         .discover(key.format)
-                        .createReaderFactory(projectedRowType, dataFilters),
+                        .createReaderFactory(projectedRowType, nonPartitionFilters),
                 dataSchema,
                 dataFilters);
     }
@@ -215,7 +236,7 @@ public class RawFileSplitRead implements SplitRead<InternalRow> {
             DataFileMeta file,
             DataFilePathFactory dataFilePathFactory,
             RawFileBulkFormatMapping bulkFormatMapping,
-            DeletionVector.Factory dvFactory)
+            IOExceptionSupplier<DeletionVector> dvFactory)
             throws IOException {
         if (fileIndexReadEnabled) {
             boolean skip =
@@ -241,9 +262,9 @@ public class RawFileSplitRead implements SplitRead<InternalRow> {
                         bulkFormatMapping.getCastMapping(),
                         PartitionUtils.create(bulkFormatMapping.getPartitionPair(), partition));
 
-        Optional<DeletionVector> deletionVector = dvFactory.create(file.fileName());
-        if (deletionVector.isPresent() && !deletionVector.get().isEmpty()) {
-            return new ApplyDeletionVectorReader(fileRecordReader, deletionVector.get());
+        DeletionVector deletionVector = dvFactory == null ? null : dvFactory.get();
+        if (deletionVector != null && !deletionVector.isEmpty()) {
+            return new ApplyDeletionVectorReader(fileRecordReader, deletionVector);
         }
         return fileRecordReader;
     }

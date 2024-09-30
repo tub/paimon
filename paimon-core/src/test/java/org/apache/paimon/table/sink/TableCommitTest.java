@@ -19,12 +19,13 @@
 package org.apache.paimon.table.sink;
 
 import org.apache.paimon.CoreOptions;
+import org.apache.paimon.Snapshot;
 import org.apache.paimon.data.GenericRow;
 import org.apache.paimon.fs.Path;
 import org.apache.paimon.fs.local.LocalFileIO;
 import org.apache.paimon.io.DataFilePathFactory;
 import org.apache.paimon.manifest.ManifestCommittable;
-import org.apache.paimon.operation.Lock;
+import org.apache.paimon.manifest.ManifestEntry;
 import org.apache.paimon.options.Options;
 import org.apache.paimon.schema.Schema;
 import org.apache.paimon.schema.SchemaManager;
@@ -125,7 +126,7 @@ public class TableCommitTest {
                         new FailingFileIO(),
                         new Path(path),
                         tableSchema,
-                        new CatalogEnvironment(Lock.emptyFactory(), null, null));
+                        CatalogEnvironment.empty());
 
         String commitUser = UUID.randomUUID().toString();
         StreamTableWrite write = table.newWrite(commitUser);
@@ -178,8 +179,13 @@ public class TableCommitTest {
         }
 
         @Override
-        public void call(List<ManifestCommittable> committables) {
-            committables.forEach(c -> commitCallbackResult.get(testId).add(c.identifier()));
+        public void call(List<ManifestEntry> entries, Snapshot snapshot) {
+            commitCallbackResult.get(testId).add(snapshot.commitIdentifier());
+        }
+
+        @Override
+        public void retry(ManifestCommittable committable) {
+            commitCallbackResult.get(testId).add(committable.identifier());
         }
 
         @Override
@@ -212,7 +218,7 @@ public class TableCommitTest {
                         LocalFileIO.create(),
                         new Path(path),
                         tableSchema,
-                        new CatalogEnvironment(Lock.emptyFactory(), null, null));
+                        CatalogEnvironment.empty());
 
         String commitUser = UUID.randomUUID().toString();
         StreamTableWrite write = table.newWrite(commitUser);

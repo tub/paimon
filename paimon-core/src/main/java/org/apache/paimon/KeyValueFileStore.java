@@ -61,15 +61,13 @@ import static org.apache.paimon.utils.Preconditions.checkArgument;
 /** {@link FileStore} for querying and updating {@link KeyValue}s. */
 public class KeyValueFileStore extends AbstractFileStore<KeyValue> {
 
-    private static final long serialVersionUID = 1L;
-
     private final boolean crossPartitionUpdate;
     private final RowType bucketKeyType;
     private final RowType keyType;
     private final RowType valueType;
     private final KeyValueFieldsExtractor keyValueFieldsExtractor;
     private final Supplier<Comparator<InternalRow>> keyComparatorSupplier;
-    private final Supplier<RecordEqualiser> valueEqualiserSupplier;
+    private final Supplier<RecordEqualiser> logDedupEqualSupplier;
     private final MergeFunctionFactory<KeyValue> mfFactory;
     private final String tableName;
 
@@ -95,7 +93,11 @@ public class KeyValueFileStore extends AbstractFileStore<KeyValue> {
         this.keyValueFieldsExtractor = keyValueFieldsExtractor;
         this.mfFactory = mfFactory;
         this.keyComparatorSupplier = new KeyComparatorSupplier(keyType);
-        this.valueEqualiserSupplier = new ValueEqualiserSupplier(valueType);
+        List<String> logDedupIgnoreFields = options.changelogRowDeduplicateIgnoreFields();
+        this.logDedupEqualSupplier =
+                options.changelogRowDeduplicate()
+                        ? ValueEqualiserSupplier.fromIgnoreFields(valueType, logDedupIgnoreFields)
+                        : () -> null;
         this.tableName = tableName;
     }
 
@@ -171,11 +173,12 @@ public class KeyValueFileStore extends AbstractFileStore<KeyValue> {
                 schemaManager,
                 schema,
                 commitUser,
+                partitionType,
                 keyType,
                 valueType,
                 keyComparatorSupplier,
                 () -> UserDefinedSeqComparator.create(valueType, options),
-                valueEqualiserSupplier,
+                logDedupEqualSupplier,
                 mfFactory,
                 pathFactory(),
                 format2PathFactory(),
@@ -200,7 +203,9 @@ public class KeyValueFileStore extends AbstractFileStore<KeyValue> {
                                         options.path(),
                                         partitionType,
                                         options.partitionDefaultName(),
-                                        format)));
+                                        format,
+                                        options.dataFilePrefix(),
+                                        options.changelogFilePrefix())));
         return pathFactoryMap;
     }
 
@@ -224,6 +229,7 @@ public class KeyValueFileStore extends AbstractFileStore<KeyValue> {
                     }
                 };
         return new KeyValueFileStoreScan(
+                newManifestsReader(forWrite),
                 partitionType,
                 bucketFilter,
                 snapshotManager(),
@@ -231,12 +237,12 @@ public class KeyValueFileStore extends AbstractFileStore<KeyValue> {
                 schema,
                 keyValueFieldsExtractor,
                 manifestFileFactory(forWrite),
-                manifestListFactory(forWrite),
                 options.bucket(),
                 forWrite,
                 options.scanManifestParallelism(),
                 options.deletionVectorsEnabled(),
-                options.mergeEngine());
+                options.mergeEngine(),
+                options.changelogProducer());
     }
 
     @Override

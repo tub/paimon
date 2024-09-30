@@ -18,6 +18,8 @@
 
 package org.apache.paimon.flink.utils;
 
+import org.apache.paimon.catalog.CachingCatalog;
+import org.apache.paimon.catalog.Catalog;
 import org.apache.paimon.hive.HiveCatalog;
 import org.apache.paimon.hive.migrate.HiveMigrator;
 import org.apache.paimon.migrate.Migrator;
@@ -30,20 +32,28 @@ public class TableMigrationUtils {
 
     public static Migrator getImporter(
             String connector,
-            HiveCatalog paimonCatalog,
+            Catalog catalog,
             String sourceDatabase,
             String souceTableName,
             String targetDatabase,
             String targetTableName,
+            Integer parallelism,
             Map<String, String> options) {
         switch (connector) {
             case "hive":
+                if (catalog instanceof CachingCatalog) {
+                    catalog = ((CachingCatalog) catalog).wrapped();
+                }
+                if (!(catalog instanceof HiveCatalog)) {
+                    throw new IllegalArgumentException("Only support Hive Catalog");
+                }
                 return new HiveMigrator(
-                        paimonCatalog,
+                        (HiveCatalog) catalog,
                         sourceDatabase,
                         souceTableName,
                         targetDatabase,
                         targetTableName,
+                        parallelism,
                         options);
             default:
                 throw new UnsupportedOperationException("Don't support connector " + connector);
@@ -52,12 +62,20 @@ public class TableMigrationUtils {
 
     public static List<Migrator> getImporters(
             String connector,
-            HiveCatalog paimonCatalog,
+            Catalog catalog,
             String sourceDatabase,
+            Integer parallelism,
             Map<String, String> options) {
         switch (connector) {
             case "hive":
-                return HiveMigrator.databaseMigrators(paimonCatalog, sourceDatabase, options);
+                if (catalog instanceof CachingCatalog) {
+                    catalog = ((CachingCatalog) catalog).wrapped();
+                }
+                if (!(catalog instanceof HiveCatalog)) {
+                    throw new IllegalArgumentException("Only support Hive Catalog");
+                }
+                return HiveMigrator.databaseMigrators(
+                        (HiveCatalog) catalog, sourceDatabase, options, parallelism);
             default:
                 throw new UnsupportedOperationException("Don't support connector " + connector);
         }

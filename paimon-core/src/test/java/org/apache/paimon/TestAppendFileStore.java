@@ -19,8 +19,9 @@
 package org.apache.paimon;
 
 import org.apache.paimon.data.BinaryRow;
-import org.apache.paimon.deletionvectors.DeletionVectorIndexFileMaintainer;
 import org.apache.paimon.deletionvectors.DeletionVectorsMaintainer;
+import org.apache.paimon.deletionvectors.append.AppendDeletionFileMaintainerHelper;
+import org.apache.paimon.deletionvectors.append.UnawareAppendDeletionFileMaintainer;
 import org.apache.paimon.fs.FileIO;
 import org.apache.paimon.fs.FileIOFinder;
 import org.apache.paimon.fs.Path;
@@ -32,7 +33,6 @@ import org.apache.paimon.io.DataIncrement;
 import org.apache.paimon.io.IndexIncrement;
 import org.apache.paimon.manifest.ManifestCommittable;
 import org.apache.paimon.operation.FileStoreCommitImpl;
-import org.apache.paimon.operation.Lock;
 import org.apache.paimon.schema.Schema;
 import org.apache.paimon.schema.SchemaManager;
 import org.apache.paimon.schema.SchemaUtils;
@@ -80,7 +80,7 @@ public class TestAppendFileStore extends AppendOnlyFileStore {
                 bucketType,
                 rowType,
                 tableName,
-                new CatalogEnvironment(Lock.emptyFactory(), null, null));
+                CatalogEnvironment.empty());
 
         this.fileIO = fileIO;
         this.commitUser = UUID.randomUUID().toString();
@@ -119,9 +119,10 @@ public class TestAppendFileStore extends AppendOnlyFileStore {
         return fileHandler.scan(lastSnapshotId, DELETION_VECTORS_INDEX, partition, bucket);
     }
 
-    public DeletionVectorIndexFileMaintainer createDVIFMaintainer(
-            Map<String, DeletionFile> dataFileToDeletionFiles) {
-        return new DeletionVectorIndexFileMaintainer(fileHandler, dataFileToDeletionFiles);
+    public UnawareAppendDeletionFileMaintainer createDVIFMaintainer(
+            BinaryRow partition, Map<String, DeletionFile> dataFileToDeletionFiles) {
+        return AppendDeletionFileMaintainerHelper.fromDeletionFiles(
+                fileHandler, partition, dataFileToDeletionFiles);
     }
 
     public DeletionVectorsMaintainer createOrRestoreDVMaintainer(BinaryRow partition, int bucket) {

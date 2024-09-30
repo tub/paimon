@@ -21,6 +21,7 @@ package org.apache.paimon.operation;
 import org.apache.paimon.Snapshot;
 import org.apache.paimon.data.BinaryRow;
 import org.apache.paimon.io.DataFileMeta;
+import org.apache.paimon.manifest.BucketEntry;
 import org.apache.paimon.manifest.FileKind;
 import org.apache.paimon.manifest.ManifestCacheFilter;
 import org.apache.paimon.manifest.ManifestEntry;
@@ -40,6 +41,8 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
+
+import static org.apache.paimon.manifest.ManifestEntry.recordCount;
 
 /** Scan operation which produces a plan. */
 public interface FileStoreScan {
@@ -66,7 +69,7 @@ public interface FileStoreScan {
 
     FileStoreScan withLevelFilter(Filter<Integer> levelFilter);
 
-    FileStoreScan withDataFileTimeMills(long dataFileTimeMills);
+    FileStoreScan withManifestEntryFilter(Filter<ManifestEntry> filter);
 
     FileStoreScan withManifestCacheFilter(ManifestCacheFilter manifestFilter);
 
@@ -74,8 +77,26 @@ public interface FileStoreScan {
 
     FileStoreScan withMetrics(ScanMetrics metrics);
 
+    @Nullable
+    Integer parallelism();
+
+    ManifestsReader manifestsReader();
+
+    List<ManifestEntry> readManifest(ManifestFileMeta manifest);
+
     /** Produce a {@link Plan}. */
     Plan plan();
+
+    /**
+     * Return record count of all changes occurred in this snapshot given the scan.
+     *
+     * @return total record count of Snapshot.
+     */
+    default Long totalRecordCount(Snapshot snapshot) {
+        return snapshot.totalRecordCount() == null
+                ? (Long) recordCount(withSnapshot(snapshot.id()).plan().files())
+                : snapshot.totalRecordCount();
+    }
 
     /**
      * Read {@link SimpleFileEntry}s, SimpleFileEntry only retains some critical information, so it
@@ -84,6 +105,8 @@ public interface FileStoreScan {
     List<SimpleFileEntry> readSimpleEntries();
 
     List<PartitionEntry> readPartitionEntries();
+
+    List<BucketEntry> readBucketEntries();
 
     default List<BinaryRow> listPartitions() {
         return readPartitionEntries().stream()
@@ -98,13 +121,11 @@ public interface FileStoreScan {
         Long watermark();
 
         /**
-         * Snapshot id of this plan, return null if the table is empty or the manifest list is
+         * Snapshot of this plan, return null if the table is empty or the manifest list is
          * specified.
          */
         @Nullable
-        Long snapshotId();
-
-        ScanMode scanMode();
+        Snapshot snapshot();
 
         /** Result {@link ManifestEntry} files. */
         List<ManifestEntry> files();

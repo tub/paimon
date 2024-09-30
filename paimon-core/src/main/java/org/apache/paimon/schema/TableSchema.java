@@ -18,6 +18,7 @@
 
 package org.apache.paimon.schema;
 
+import org.apache.paimon.CoreOptions;
 import org.apache.paimon.fs.FileIO;
 import org.apache.paimon.fs.Path;
 import org.apache.paimon.types.DataField;
@@ -49,7 +50,8 @@ public class TableSchema implements Serializable {
     private static final long serialVersionUID = 1L;
 
     public static final int PAIMON_07_VERSION = 1;
-    public static final int CURRENT_VERSION = 2;
+    public static final int PAIMON_08_VERSION = 2;
+    public static final int CURRENT_VERSION = 3;
 
     // version of schema for paimon
     private final int version;
@@ -64,6 +66,10 @@ public class TableSchema implements Serializable {
     private final List<String> partitionKeys;
 
     private final List<String> primaryKeys;
+
+    private final List<String> bucketKeys;
+
+    private final int numBucket;
 
     private final Map<String, String> options;
 
@@ -114,8 +120,13 @@ public class TableSchema implements Serializable {
         // try to trim to validate primary keys
         trimmedPrimaryKeys();
 
-        // try to validate bucket keys
-        originalBucketKeys();
+        // try to validate and initialize the bucket keys
+        List<String> tmpBucketKeys = originalBucketKeys();
+        if (tmpBucketKeys.isEmpty()) {
+            tmpBucketKeys = trimmedPrimaryKeys();
+        }
+        bucketKeys = tmpBucketKeys;
+        numBucket = CoreOptions.fromMap(options).bucket();
     }
 
     public int version() {
@@ -170,11 +181,11 @@ public class TableSchema implements Serializable {
         return options;
     }
 
+    public int numBuckets() {
+        return numBucket;
+    }
+
     public List<String> bucketKeys() {
-        List<String> bucketKeys = originalBucketKeys();
-        if (bucketKeys.isEmpty()) {
-            bucketKeys = trimmedPrimaryKeys();
-        }
         return bucketKeys;
     }
 

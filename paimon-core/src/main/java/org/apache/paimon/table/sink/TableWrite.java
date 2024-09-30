@@ -22,6 +22,7 @@ import org.apache.paimon.annotation.Public;
 import org.apache.paimon.data.BinaryRow;
 import org.apache.paimon.data.InternalRow;
 import org.apache.paimon.disk.IOManager;
+import org.apache.paimon.io.BundleRecords;
 import org.apache.paimon.memory.MemorySegmentPool;
 import org.apache.paimon.metrics.MetricRegistry;
 import org.apache.paimon.table.Table;
@@ -40,6 +41,15 @@ public interface TableWrite extends AutoCloseable {
     /** With {@link MemorySegmentPool} for the current table write. */
     TableWrite withMemoryPool(MemorySegmentPool memoryPool);
 
+    /**
+     * This method is called when the insert only status of the records changes.
+     *
+     * @param insertOnly If true, all the following records would be of {@link
+     *     org.apache.paimon.types.RowKind#INSERT}, and no two records would have the same primary
+     *     key.
+     */
+    void withInsertOnly(boolean insertOnly);
+
     /** Calculate which partition {@code row} belongs to. */
     BinaryRow getPartition(InternalRow row);
 
@@ -51,6 +61,9 @@ public interface TableWrite extends AutoCloseable {
 
     /** Write a row with bucket. */
     void write(InternalRow row, int bucket) throws Exception;
+
+    /** Write a bundle records directly, not per row. */
+    void writeBundle(BinaryRow partition, int bucket, BundleRecords bundle) throws Exception;
 
     /**
      * Compact a bucket of a partition. By default, it will determine whether to perform the

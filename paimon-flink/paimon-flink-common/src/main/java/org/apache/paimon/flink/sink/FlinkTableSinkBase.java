@@ -129,13 +129,12 @@ public abstract class FlinkTableSinkBase
                 overwrite ? null : (logSinkProvider == null ? null : logSinkProvider.createSink());
         return new PaimonDataStreamSinkProvider(
                 (dataStream) -> {
-                    LogFlinkSinkBuilder builder = new LogFlinkSinkBuilder(table);
+                    LogFlinkSinkBuilder builder = createSinkBuilder();
                     builder.logSinkFunction(logSinkFunction)
                             .forRowData(
                                     new DataStream<>(
                                             dataStream.getExecutionEnvironment(),
                                             dataStream.getTransformation()))
-                            .inputBounded(context.isBounded())
                             .clusteringIfPossible(
                                     conf.get(CLUSTERING_COLUMNS),
                                     conf.get(CLUSTERING_STRATEGY),
@@ -147,6 +146,10 @@ public abstract class FlinkTableSinkBase
                     conf.getOptional(SINK_PARALLELISM).ifPresent(builder::parallelism);
                     return builder.build();
                 });
+    }
+
+    protected LogFlinkSinkBuilder createSinkBuilder() {
+        return new LogFlinkSinkBuilder(table);
     }
 
     @Override

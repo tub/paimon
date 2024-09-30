@@ -155,8 +155,8 @@ public final class DataField implements Serializable {
     }
 
     /**
-     * When the order of the same field is different, its ID may also bedifferent, so the comparison
-     * should not include the ID.
+     * When the order of the same field is different, its ID may also be different, so the
+     * comparison should not include the ID.
      */
     public static boolean dataFieldEqualsIgnoreId(DataField dataField1, DataField dataField2) {
         if (dataField1 == dataField2) {

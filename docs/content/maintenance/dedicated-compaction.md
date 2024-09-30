@@ -81,9 +81,21 @@ To run a dedicated job for compaction, follow these instructions.
 
 {{< tabs "dedicated-compaction-job" >}}
 
-{{< tab "Flink" >}}
+{{< tab "Flink SQL" >}}
 
-Flink SQL currently does not support statements related to compactions, so we have to submit the compaction job through `flink run`.
+Run the following sql:
+
+```sql
+CALL sys.compact(
+  `table` => 'default.T', 
+  partitions => 'p=0', 
+  options => 'sink.parallelism=4',
+  `where` => 'dt>10 and h<20'
+);
+```
+{{< /tab >}}
+
+{{< tab "Flink Action Jar" >}}
 
 Run the following command to submit a compaction job for the table.
 
@@ -134,7 +146,7 @@ For more usage of the compact action, see
 
 {{< hint info >}}
 Similarly, the default is synchronous compaction, which may cause checkpoint timeouts.
-You can configure `table_conf` to use [Asynchronous Compaction]({{< ref "maintenance/write-performance#asynchronous-compaction" >}}).
+You can configure `table_conf` to use [Asynchronous Compaction]({{< ref "primary-key-table/compaction#asynchronous-compaction" >}}).
 {{< /hint >}}
 
 ## Database Compaction Job
@@ -143,7 +155,31 @@ You can run the following command to submit a compaction job for multiple databa
 
 {{< tabs "database-compaction-job" >}}
 
-{{< tab "Flink" >}}
+{{< tab "Flink SQL" >}}
+
+Run the following sql:
+
+```sql
+CALL sys.compact_database(
+  including_databases => 'includingDatabases', 
+  mode => 'mode', 
+  including_tables => 'includingTables', 
+  excluding_tables => 'excludingTables', 
+  table_options => 'tableOptions'
+)
+
+-- example
+CALL sys.compact_database(
+  including_databases => 'db1|db2', 
+  mode => 'combined', 
+  including_tables => 'table_.*', 
+  excluding_tables => 'ignore', 
+  table_options => 'sink.parallelism=4'
+)
+```
+{{< /tab >}}
+
+{{< tab "Flink Action Jar" >}}
 
 ```bash
 <FLINK_HOME>/bin/flink run \
@@ -161,7 +197,7 @@ You can run the following command to submit a compaction job for multiple databa
 * `--including_databases` is used to specify which database is to be compacted. In compact mode, you need to specify a database name, in compact_database mode, you could specify multiple database, regular expression is supported.
 * `--including_tables` is used to specify which source tables are to be compacted, you must use '|' to separate multiple tables, the format is `databaseName.tableName`, regular expression is supported. For example, specifying "--including_tables db1.t1|db2.+" means to compact table 'db1.t1' and all tables in the db2 database.
 * `--excluding_tables`  is used to specify which source tables are not to be compacted. The usage is same as "--including_tables". "--excluding_tables" has higher priority than "--including_tables" if you specified both.
-* `mode` is used to specify compaction mode. Possible values:
+* `--mode` is used to specify compaction mode. Possible values:
   * "divided" (the default mode if you haven't specified one): start a sink for each table, the compaction of the new table requires restarting the job.
   * "combined": start a single combined sink for all tables, the new table will be automatically compacted.
 * `--catalog_conf` is the configuration for Paimon catalog. Each configuration should be specified in the format `key=value`. See [here]({{< ref "maintenance/configurations" >}}) for a complete list of catalog configurations.
@@ -231,8 +267,22 @@ For more usage of the compact_database action, see
 ## Sort Compact
 
 If your table is configured with [dynamic bucket primary key table]({{< ref "primary-key-table/data-distribution#dynamic-bucket" >}})
-or [append table]({{< ref "append-table/append-table" >}}) ,
+or [append table]({{< ref "append-table/overview" >}}) ,
 you can trigger a compact with specified column sort to speed up queries.
+
+{{< tabs "sort-compaction-job" >}}
+
+{{< tab "Flink SQL" >}}
+
+Run the following sql:
+
+```sql
+-- sort compact table
+CALL sys.compact(`table` => 'default.T', order_strategy => 'zorder', order_by => 'a,b')
+```
+{{< /tab >}}
+
+{{< tab "Flink Action Jar" >}}
 
 ```bash  
 <FLINK_HOME>/bin/flink run \
@@ -243,7 +293,7 @@ you can trigger a compact with specified column sort to speed up queries.
     --database <database-name> \ 
     --table <table-name> \
     --order_strategy <orderType> \
-    --order_by <col1,col2,...>
+    --order_by <col1,col2,...> \
     [--partition <partition-name>] \
     [--catalog_conf <paimon-catalog-conf> [--catalog_conf <paimon-catalog-conf> ...]] \
     [--table_conf <paimon-table-dynamic-conf> [--table_conf <paimon-table-dynamic-conf>] ...]
@@ -253,3 +303,127 @@ There are two new configuration in `Sort Compact`
 
 The sort parallelism is the same as the sink parallelism, you can dynamically specify it by add conf `--table_conf sink.parallelism=<value>`.
 
+{{< /tab >}}
+
+{{< /tabs >}}
+
+## Historical Partition Compact
+
+You can run the following command to submit a compaction job for partition which has not received any new data for
+a period of time. Small files in those partitions will be full compacted.
+
+{{< hint info >}}
+
+This feature now is only used in batch mode.
+
+{{< /hint >}}
+
+### For Table
+
+This is for one table.
+{{< tabs "history-partition-compaction-job for table" >}}
+
+{{< tab "Flink SQL" >}}
+
+Run the following sql:
+
+```sql
+-- history partition compact table
+CALL sys.compact(`table` => 'default.T', 'partition_idle_time' => '1 d')
+```
+
+{{< /tab >}}
+
+{{< tab "Flink Action Jar" >}}
+
+```bash  
+<FLINK_HOME>/bin/flink run \
+    -D execution.runtime-mode=batch \
+    /path/to/paimon-flink-action-{{< version >}}.jar \
+    compact \
+    --warehouse <warehouse-path> \
+    --database <database-name> \ 
+    --table <table-name> \
+    --partition_idle_time <partition-idle-time> \ 
+    [--partition <partition-name>] \
+    [--catalog_conf <paimon-catalog-conf> [--catalog_conf <paimon-catalog-conf> ...]] \
+    [--table_conf <paimon-table-dynamic-conf> [--table_conf <paimon-table-dynamic-conf>] ...]
+```
+
+There are one new configuration in `Historical Partition Compact`
+
+* `--partition_idle_time`: this is used to do a full compaction for partition which had not received any new data for
+  'partition_idle_time'. And only these partitions will be compacted.
+
+{{< /tab >}}
+
+{{< /tabs >}}
+
+### For Databases
+
+This is for multiple tables in different databases.
+{{< tabs "history-partition-compaction-job for databases" >}}
+
+{{< tab "Flink SQL" >}}
+
+Run the following sql:
+
+```sql
+-- history partition compact table
+CALL sys.compact_database(
+  including_databases => 'includingDatabases', 
+  mode => 'mode', 
+  including_tables => 'includingTables',
+  excluding_tables => 'excludingTables',
+  table_options => 'tableOptions',
+  partition_idle_time => 'partition_idle_time'
+);
+```
+
+Example: compact historical partitions for tables in database
+
+```sql
+-- history partition compact table
+CALL sys.compact_database(
+  includingDatabases => 'test_db', 
+  mode => 'combined', 
+  partition_idle_time => '1 d'
+);
+```
+
+{{< /tab >}}
+
+{{< tab "Flink Action Jar" >}}
+
+```bash  
+<FLINK_HOME>/bin/flink run \
+    -D execution.runtime-mode=batch \
+    /path/to/paimon-flink-action-{{< version >}}.jar \
+    compact_database \
+    --warehouse <warehouse-path> \
+    --including_databases <database-name|name-regular-expr> \
+    --partition_idle_time <partition-idle-time> \ 
+    [--including_tables <paimon-table-name|name-regular-expr>] \
+    [--excluding_tables <paimon-table-name|name-regular-expr>] \
+    [--mode <compact-mode>] \
+    [--catalog_conf <paimon-catalog-conf> [--catalog_conf <paimon-catalog-conf> ...]] \
+    [--table_conf <paimon-table_conf> [--table_conf <paimon-table_conf> ...]]
+```
+
+Example: compact historical partitions for tables in database
+
+```bash
+<FLINK_HOME>/bin/flink run \
+    /path/to/paimon-flink-action-{{< version >}}.jar \
+    compact_database \
+    --warehouse s3:///path/to/warehouse \
+    --including_databases test_db \
+    --partition_idle_time 1d \
+    --catalog_conf s3.endpoint=https://****.com \
+    --catalog_conf s3.access-key=***** \
+    --catalog_conf s3.secret-key=*****
+```
+
+{{< /tab >}}
+
+{{< /tabs >}}

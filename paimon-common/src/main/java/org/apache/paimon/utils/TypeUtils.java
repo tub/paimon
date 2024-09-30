@@ -184,9 +184,25 @@ public class TypeUtils {
                 } catch (JsonProcessingException e) {
                     LOG.info(
                             String.format(
-                                    "Failed to parse ARRAY for type  %s  with value  %s", type, s),
+                                    "Failed to parse ARRAY for type %s with value %s", type, s),
                             e);
-                    return new GenericArray(new int[] {});
+                    // try existing code flow
+                    if (elementType instanceof VarCharType) {
+                        if (s.startsWith("[")) {
+                            s = s.substring(1);
+                        }
+                        if (s.endsWith("]")) {
+                            s = s.substring(0, s.length() - 1);
+                        }
+                        String[] ss = s.split(",");
+                        BinaryString[] binaryStrings = new BinaryString[ss.length];
+                        for (int i = 0; i < ss.length; i++) {
+                            binaryStrings[i] = BinaryString.fromString(ss[i]);
+                        }
+                        return new GenericArray(binaryStrings);
+                    } else {
+                        throw new UnsupportedOperationException("Unsupported type " + type);
+                    }
                 } catch (Exception e) {
                     throw new RuntimeException(
                             String.format("Failed to parse Json String %s", s), e);
@@ -217,8 +233,7 @@ public class TypeUtils {
                     return new GenericMap(resultMap);
                 } catch (JsonProcessingException e) {
                     LOG.info(
-                            String.format(
-                                    "Failed to parse MAP for type  %s  with value  %s", type, s),
+                            String.format("Failed to parse MAP for type %s with value %s", type, s),
                             e);
                     return new GenericMap(Collections.emptyMap());
                 } catch (Exception e) {
@@ -229,19 +244,17 @@ public class TypeUtils {
                 RowType rowType = (RowType) type;
                 try {
                     JsonNode rowNode = OBJECT_MAPPER.readTree(s);
-                    List<Object> rowFields = new ArrayList<>();
                     GenericRow genericRow =
                             new GenericRow(
                                     rowType.getFields()
                                             .size()); // TODO: What about RowKind? always +I?
-                    for (int pos = 0; pos < rowType.getFields().size(); pos++) {
+                    for (int pos = 0; pos < rowType.getFields().size(); ++pos) {
                         DataField field = rowType.getFields().get(pos);
                         JsonNode fieldNode = rowNode.get(field.name());
                         if (fieldNode != null && !fieldNode.isNull()) {
                             String fieldJson = fieldNode.toString();
                             Object fieldObject =
                                     castFromStringInternal(fieldJson, field.type(), isCdcValue);
-                            rowFields.add(fieldObject);
                             genericRow.setField(pos, fieldObject);
                         } else {
                             genericRow.setField(pos, null); // Handle null fields

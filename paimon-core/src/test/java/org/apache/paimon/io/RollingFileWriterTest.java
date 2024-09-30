@@ -73,7 +73,10 @@ public class RollingFileWriterTest {
                                                         new Path(tempDir + "/bucket-0"),
                                                         CoreOptions.FILE_FORMAT
                                                                 .defaultValue()
-                                                                .toString())
+                                                                .toString(),
+                                                        CoreOptions.DATA_FILE_PREFIX.defaultValue(),
+                                                        CoreOptions.CHANGELOG_FILE_PREFIX
+                                                                .defaultValue())
                                                 .newPath(),
                                         SCHEMA,
                                         fileFormat
@@ -90,7 +93,8 @@ public class RollingFileWriterTest {
                                                 new CoreOptions(new HashMap<>()),
                                                 SCHEMA.getFieldNames()),
                                         new FileIndexOptions(),
-                                        FileSource.APPEND),
+                                        FileSource.APPEND,
+                                        true),
                         TARGET_FILE_SIZE);
     }
 

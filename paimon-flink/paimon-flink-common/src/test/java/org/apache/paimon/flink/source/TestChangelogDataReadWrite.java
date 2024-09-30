@@ -70,6 +70,8 @@ public class TestChangelogDataReadWrite {
             new RowType(singletonList(new DataField(0, "k", new BigIntType())));
     private static final RowType VALUE_TYPE =
             new RowType(singletonList(new DataField(0, "v", new BigIntType())));
+    private static final RowType PARTITION_TYPE =
+            new RowType(singletonList(new DataField(0, "p", new IntType())));
     private static final Comparator<InternalRow> COMPARATOR =
             Comparator.comparingLong(o -> o.getLong(0));
     private static final RecordEqualiser EQUALISER =
@@ -103,7 +105,9 @@ public class TestChangelogDataReadWrite {
                         tablePath,
                         RowType.of(new IntType()),
                         "default",
-                        CoreOptions.FILE_FORMAT.defaultValue().toString());
+                        CoreOptions.FILE_FORMAT.defaultValue().toString(),
+                        CoreOptions.DATA_FILE_PREFIX.defaultValue(),
+                        CoreOptions.CHANGELOG_FILE_PREFIX.defaultValue());
         this.snapshotManager = new SnapshotManager(LocalFileIO.create(), new Path(root));
         this.commitUser = UUID.randomUUID().toString();
     }
@@ -171,6 +175,7 @@ public class TestChangelogDataReadWrite {
                                 schemaManager,
                                 schemaManager.schema(0),
                                 commitUser,
+                                PARTITION_TYPE,
                                 KEY_TYPE,
                                 VALUE_TYPE,
                                 () -> COMPARATOR,

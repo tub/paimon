@@ -84,6 +84,12 @@ USE paimon.default;
 
 Also, you can create [SparkGenericCatalog]({{< ref "spark/quick-start" >}}).
 
+#### Synchronizing Partitions into Hive Metastore
+
+By default, Paimon does not synchronize newly created partitions into Hive metastore. Users will see an unpartitioned table in Hive. Partition push-down will be carried out by filter push-down instead.
+
+If you want to see a partitioned table in Hive and also synchronize newly created partitions into Hive metastore, please set the table property `metastore.partitioned-table` to true. Also see [CoreOptions]({{< ref "maintenance/configurations#CoreOptions" >}}).
+
 ### Creating JDBC Catalog
 
 By using the Paimon JDBC catalog, changes to the catalog will be directly stored in relational databases such as SQLite, MySQL, postgres, etc.
@@ -145,10 +151,6 @@ CREATE TABLE my_table (
     'primary-key' = 'dt,hh,user_id'
 );
 ```
-
-{{< hint info >}}
-By configuring [partition.expiration-time]({{< ref "maintenance/manage-partition" >}}), expired partitions can be automatically deleted.
-{{< /hint >}}
 
 ## Create Table As Select
 

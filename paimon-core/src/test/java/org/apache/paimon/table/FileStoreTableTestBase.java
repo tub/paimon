@@ -37,11 +37,11 @@ import org.apache.paimon.fs.Path;
 import org.apache.paimon.fs.local.LocalFileIO;
 import org.apache.paimon.io.DataFileMeta;
 import org.apache.paimon.mergetree.compact.ConcatRecordReader;
-import org.apache.paimon.mergetree.compact.ConcatRecordReader.ReaderSupplier;
 import org.apache.paimon.operation.FileStoreTestUtils;
 import org.apache.paimon.options.MemorySize;
 import org.apache.paimon.options.Options;
 import org.apache.paimon.predicate.PredicateBuilder;
+import org.apache.paimon.reader.ReaderSupplier;
 import org.apache.paimon.reader.RecordReader;
 import org.apache.paimon.reader.RecordReaderIterator;
 import org.apache.paimon.schema.SchemaChange;
@@ -108,12 +108,14 @@ import static org.apache.paimon.CoreOptions.COMPACTION_MAX_FILE_NUM;
 import static org.apache.paimon.CoreOptions.CONSUMER_IGNORE_PROGRESS;
 import static org.apache.paimon.CoreOptions.ExpireExecutionMode;
 import static org.apache.paimon.CoreOptions.FILE_FORMAT;
+import static org.apache.paimon.CoreOptions.SNAPSHOT_CLEAN_EMPTY_DIRECTORIES;
 import static org.apache.paimon.CoreOptions.SNAPSHOT_EXPIRE_EXECUTION_MODE;
 import static org.apache.paimon.CoreOptions.SNAPSHOT_EXPIRE_LIMIT;
 import static org.apache.paimon.CoreOptions.SNAPSHOT_NUM_RETAINED_MAX;
 import static org.apache.paimon.CoreOptions.SNAPSHOT_NUM_RETAINED_MIN;
 import static org.apache.paimon.CoreOptions.WRITE_ONLY;
 import static org.apache.paimon.testutils.assertj.PaimonAssertions.anyCauseMatches;
+import static org.apache.paimon.utils.Preconditions.checkNotNull;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -666,6 +668,32 @@ public abstract class FileStoreTableTestBase {
     }
 
     @Test
+    public void testConsumerIdNotBlank() throws Exception {
+        FileStoreTable table =
+                createFileStoreTable(
+                        options -> {
+                            options.set(CoreOptions.CONSUMER_ID, "");
+                            options.set(SNAPSHOT_NUM_RETAINED_MIN, 3);
+                            options.set(SNAPSHOT_NUM_RETAINED_MAX, 3);
+                        });
+
+        StreamWriteBuilder writeBuilder = table.newStreamWriteBuilder();
+        StreamTableWrite write = writeBuilder.newWrite();
+        StreamTableCommit commit = writeBuilder.newCommit();
+
+        ReadBuilder readBuilder = table.newReadBuilder();
+        StreamTableScan scan = readBuilder.newStreamScan();
+        TableRead read = readBuilder.newRead();
+
+        write.write(rowData(1, 10, 100L));
+        commit.commit(0, write.prepareCommit(true, 0));
+
+        // assert can't set consumer-id to blank string
+        assertThatThrownBy(() -> getResult(read, scan.plan().splits(), STREAMING_ROW_TO_STRING))
+                .isInstanceOf(RuntimeException.class);
+    }
+
+    @Test
     public void testConsumeId() throws Exception {
         FileStoreTable table =
                 createFileStoreTable(
@@ -759,6 +787,30 @@ public abstract class FileStoreTableTestBase {
 
         write.close();
         commit.close();
+    }
+
+    @Test
+    public void testRollbackToSnapshotSkipNonExistentSnapshot() throws Exception {
+        int commitTimes = ThreadLocalRandom.current().nextInt(100) + 5;
+        FileStoreTable table = prepareRollbackTable(commitTimes);
+
+        SnapshotManager snapshotManager = table.snapshotManager();
+        table.snapshotManager()
+                .commitLatestHint(checkNotNull(snapshotManager.latestSnapshotId()) + 100);
+        table.rollbackTo(1L);
+        ReadBuilder readBuilder = table.newReadBuilder();
+        List<String> result =
+                getResult(
+                        readBuilder.newRead(),
+                        readBuilder.newScan().plan().splits(),
+                        BATCH_ROW_TO_STRING);
+        assertThat(result)
+                .containsExactlyInAnyOrder("0|0|0|binary|varbinary|mapKey:mapVal|multiset");
+
+        List<java.nio.file.Path> files =
+                Files.walk(new File(tablePath.toUri().getPath()).toPath())
+                        .collect(Collectors.toList());
+        assertThat(files.size()).isEqualTo(14);
     }
 
     // All tags are after the rollback snapshot
@@ -940,12 +992,14 @@ public abstract class FileStoreTableTestBase {
 
     private FileStoreTable prepareRollbackTable(int commitTimes) throws Exception {
         FileStoreTable table = createFileStoreTable();
-        prepareRollbackTable(commitTimes, table);
-        return table;
+        return prepareRollbackTable(commitTimes, table);
     }
 
     protected FileStoreTable prepareRollbackTable(int commitTimes, FileStoreTable table)
             throws Exception {
+        table =
+                table.copy(
+                        Collections.singletonMap(SNAPSHOT_CLEAN_EMPTY_DIRECTORIES.key(), "true"));
         StreamTableWrite write = table.newWrite(commitUser);
         StreamTableCommit commit = table.newCommit(commitUser);
 
@@ -1166,7 +1220,7 @@ public abstract class FileStoreTableTestBase {
     }
 
     @Test
-    public void testMergeBranch() throws Exception {
+    public void testfastForward() throws Exception {
         FileStoreTable table = createFileStoreTable();
         generateBranch(table);
         FileStoreTable tableBranch = createFileStoreTable(BRANCH_NAME);
@@ -1180,17 +1234,17 @@ public abstract class FileStoreTableTestBase {
                 .containsExactlyInAnyOrder("0|0|0|binary|varbinary|mapKey:mapVal|multiset");
 
         // Test for unsupported branch name
-        assertThatThrownBy(() -> table.mergeBranch("test-branch"))
+        assertThatThrownBy(() -> table.fastForward("test-branch"))
                 .satisfies(
                         anyCauseMatches(
                                 IllegalArgumentException.class,
                                 "Branch name 'test-branch' doesn't exist."));
 
-        assertThatThrownBy(() -> table.mergeBranch("main"))
+        assertThatThrownBy(() -> table.fastForward("main"))
                 .satisfies(
                         anyCauseMatches(
                                 IllegalArgumentException.class,
-                                "Branch name 'main' do not use in merge branch."));
+                                "Branch name 'main' do not use in fast-forward."));
 
         // Write data to branch1
         try (StreamTableWrite write = tableBranch.newWrite(commitUser);
@@ -1217,10 +1271,10 @@ public abstract class FileStoreTableTestBase {
                                 BATCH_ROW_TO_STRING))
                 .containsExactlyInAnyOrder("0|0|0|binary|varbinary|mapKey:mapVal|multiset");
 
-        // Merge branch1 to main branch
-        table.mergeBranch(BRANCH_NAME);
+        // Fast-forward branch1 to main branch
+        table.fastForward(BRANCH_NAME);
 
-        // After merge branch1, verify branch1 and the main branch have the same data
+        // After fast-forward branch1, verify branch1 and the main branch have the same data
         assertThat(
                         getResult(
                                 table.newRead(),
@@ -1279,8 +1333,8 @@ public abstract class FileStoreTableTestBase {
                         "0|0|0|binary|varbinary|mapKey:mapVal|multiset",
                         "2|20|200|binary|varbinary|mapKey:mapVal|multiset");
 
-        // Merge branch1 to main branch again
-        table.mergeBranch("branch1");
+        // Fast-forward branch1 to main branch again
+        table.fastForward("branch1");
 
         // Verify data in main branch is same to branch1
         assertThat(
