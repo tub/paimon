@@ -18,18 +18,25 @@
 
 package org.apache.paimon.table;
 
+import org.apache.paimon.Snapshot;
+import org.apache.paimon.manifest.IndexManifestEntry;
+import org.apache.paimon.manifest.ManifestEntry;
+import org.apache.paimon.manifest.ManifestFileMeta;
 import org.apache.paimon.stats.Statistics;
 import org.apache.paimon.table.sink.BatchWriteBuilder;
 import org.apache.paimon.table.sink.InnerTableCommit;
 import org.apache.paimon.table.sink.InnerTableWrite;
 import org.apache.paimon.table.sink.StreamWriteBuilder;
+import org.apache.paimon.table.sink.WriteSelector;
 import org.apache.paimon.table.source.StreamDataTableScan;
+import org.apache.paimon.utils.SimpleFileReader;
 
 import java.time.Duration;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.OptionalLong;
 
 /** Readonly table which only provide implementation for scan and read. */
 public interface ReadonlyTable extends InnerTable {
@@ -71,6 +78,14 @@ public interface ReadonlyTable extends InnerTable {
     }
 
     @Override
+    default Optional<WriteSelector> newWriteSelector() {
+        throw new UnsupportedOperationException(
+                String.format(
+                        "Readonly Table %s does not support newWriteSelector.",
+                        this.getClass().getSimpleName()));
+    }
+
+    @Override
     default InnerTableWrite newWrite(String commitUser) {
         throw new UnsupportedOperationException(
                 String.format(
@@ -91,6 +106,46 @@ public interface ReadonlyTable extends InnerTable {
         throw new UnsupportedOperationException(
                 String.format(
                         "Readonly Table %s does not support newStreamScan.",
+                        this.getClass().getSimpleName()));
+    }
+
+    @Override
+    default OptionalLong latestSnapshotId() {
+        throw new UnsupportedOperationException(
+                String.format(
+                        "Readonly Table %s does not support currentSnapshot.",
+                        this.getClass().getSimpleName()));
+    }
+
+    @Override
+    default Snapshot snapshot(long snapshotId) {
+        throw new UnsupportedOperationException(
+                String.format(
+                        "Readonly Table %s does not support snapshot.",
+                        this.getClass().getSimpleName()));
+    }
+
+    @Override
+    default SimpleFileReader<ManifestFileMeta> manifestListReader() {
+        throw new UnsupportedOperationException(
+                String.format(
+                        "Readonly Table %s does not support manifestListReader.",
+                        this.getClass().getSimpleName()));
+    }
+
+    @Override
+    default SimpleFileReader<ManifestEntry> manifestFileReader() {
+        throw new UnsupportedOperationException(
+                String.format(
+                        "Readonly Table %s does not support manifestFileReader.",
+                        this.getClass().getSimpleName()));
+    }
+
+    @Override
+    default SimpleFileReader<IndexManifestEntry> indexManifestFileReader() {
+        throw new UnsupportedOperationException(
+                String.format(
+                        "Readonly Table %s does not support indexManifestFileReader.",
                         this.getClass().getSimpleName()));
     }
 
@@ -159,14 +214,6 @@ public interface ReadonlyTable extends InnerTable {
     }
 
     @Override
-    default void createBranch(String branchName, long snapshotId) {
-        throw new UnsupportedOperationException(
-                String.format(
-                        "Readonly Table %s does not support createBranch with snapshotId.",
-                        this.getClass().getSimpleName()));
-    }
-
-    @Override
     default void createBranch(String branchName, String tagName) {
         throw new UnsupportedOperationException(
                 String.format(
@@ -183,18 +230,10 @@ public interface ReadonlyTable extends InnerTable {
     }
 
     @Override
-    default void mergeBranch(String branchName) {
+    default void fastForward(String branchName) {
         throw new UnsupportedOperationException(
                 String.format(
-                        "Readonly Table %s does not support mergeBranch.",
-                        this.getClass().getSimpleName()));
-    }
-
-    @Override
-    default void replaceBranch(String fromBranch) {
-        throw new UnsupportedOperationException(
-                String.format(
-                        "Readonly Table %s does not support replaceBranch.",
+                        "Readonly Table %s does not support fastForward.",
                         this.getClass().getSimpleName()));
     }
 

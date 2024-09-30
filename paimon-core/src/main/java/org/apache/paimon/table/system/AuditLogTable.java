@@ -27,8 +27,13 @@ import org.apache.paimon.data.InternalRow;
 import org.apache.paimon.disk.IOManager;
 import org.apache.paimon.fs.FileIO;
 import org.apache.paimon.fs.Path;
+import org.apache.paimon.manifest.BucketEntry;
+import org.apache.paimon.manifest.IndexManifestEntry;
+import org.apache.paimon.manifest.ManifestEntry;
+import org.apache.paimon.manifest.ManifestFileMeta;
 import org.apache.paimon.manifest.PartitionEntry;
 import org.apache.paimon.metrics.MetricRegistry;
+import org.apache.paimon.operation.ManifestsReader;
 import org.apache.paimon.predicate.LeafPredicate;
 import org.apache.paimon.predicate.Predicate;
 import org.apache.paimon.predicate.PredicateBuilder;
@@ -53,8 +58,10 @@ import org.apache.paimon.types.RowKind;
 import org.apache.paimon.types.RowType;
 import org.apache.paimon.types.VarCharType;
 import org.apache.paimon.utils.BranchManager;
+import org.apache.paimon.utils.FileStorePathFactory;
 import org.apache.paimon.utils.Filter;
 import org.apache.paimon.utils.ProjectedRow;
+import org.apache.paimon.utils.SimpleFileReader;
 import org.apache.paimon.utils.SnapshotManager;
 import org.apache.paimon.utils.TagManager;
 
@@ -69,6 +76,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.OptionalLong;
 import java.util.stream.Collectors;
 
 import static org.apache.paimon.catalog.Catalog.SYSTEM_TABLE_SPLITTER;
@@ -94,33 +102,58 @@ public class AuditLogTable implements DataTable, ReadonlyTable {
                                 p.literals()));
             };
 
-    private final FileStoreTable dataTable;
+    private final FileStoreTable wrapped;
 
-    public AuditLogTable(FileStoreTable dataTable) {
-        this.dataTable = dataTable;
+    public AuditLogTable(FileStoreTable wrapped) {
+        this.wrapped = wrapped;
+    }
+
+    @Override
+    public OptionalLong latestSnapshotId() {
+        return wrapped.latestSnapshotId();
+    }
+
+    @Override
+    public Snapshot snapshot(long snapshotId) {
+        return wrapped.snapshot(snapshotId);
+    }
+
+    @Override
+    public SimpleFileReader<ManifestFileMeta> manifestListReader() {
+        return wrapped.manifestListReader();
+    }
+
+    @Override
+    public SimpleFileReader<ManifestEntry> manifestFileReader() {
+        return wrapped.manifestFileReader();
+    }
+
+    @Override
+    public SimpleFileReader<IndexManifestEntry> indexManifestFileReader() {
+        return wrapped.indexManifestFileReader();
     }
 
     @Override
     public String name() {
-        return dataTable.name() + SYSTEM_TABLE_SPLITTER + AUDIT_LOG;
+        return wrapped.name() + SYSTEM_TABLE_SPLITTER + AUDIT_LOG;
     }
 
     @Override
     public RowType rowType() {
         List<DataField> fields = new ArrayList<>();
         fields.add(new DataField(0, ROW_KIND, new VarCharType(VarCharType.MAX_LENGTH)));
-        fields.addAll(dataTable.rowType().getFields());
+        fields.addAll(wrapped.rowType().getFields());
         return new RowType(fields);
     }
 
     @Override
     public List<String> partitionKeys() {
-        return dataTable.partitionKeys();
+        return wrapped.partitionKeys();
     }
 
     @Override
     public Map<String, String> options() {
-        return dataTable.options();
+        return wrapped.options();
     }
 
     @Override
@@ -130,57 +163,62 @@ public class AuditLogTable implements DataTable, ReadonlyTable {
 
     @Override
     public SnapshotReader newSnapshotReader() {
-        return new AuditLogDataReader(dataTable.newSnapshotReader());
+        return new AuditLogDataReader(wrapped.newSnapshotReader());
     }
 
     @Override
     public DataTableScan newScan() {
-        return new AuditLogBatchScan(dataTable.newScan());
+        return new AuditLogBatchScan(wrapped.newScan());
     }
 
     @Override
     public StreamDataTableScan newStreamScan() {
-        return new AuditLogStreamScan(dataTable.newStreamScan());
+        return new AuditLogStreamScan(wrapped.newStreamScan());
     }
 
     @Override
     public CoreOptions coreOptions() {
-        return dataTable.coreOptions();
+        return wrapped.coreOptions();
     }
 
     @Override
     public Path location() {
-        return dataTable.location();
+        return wrapped.location();
     }
 
     @Override
     public SnapshotManager snapshotManager() {
-        return dataTable.snapshotManager();
+        return wrapped.snapshotManager();
     }
 
     @Override
     public TagManager tagManager() {
-        return dataTable.tagManager();
+        return wrapped.tagManager();
     }
 
     @Override
     public BranchManager branchManager() {
-        return dataTable.branchManager();
+        return wrapped.branchManager();
+    }
+
+    @Override
+    public DataTable switchToBranch(String branchName) {
+        return new AuditLogTable(wrapped.switchToBranch(branchName));
     }
 
     @Override
     public InnerTableRead newRead() {
-        return new AuditLogRead(dataTable.newRead());
+        return new AuditLogRead(wrapped.newRead());
     }
 
     @Override
     public Table copy(Map<String, String> dynamicOptions) {
-        return new AuditLogTable(dataTable.copy(dynamicOptions));
+        return new AuditLogTable(wrapped.copy(dynamicOptions));
     }
 
     @Override
     public FileIO fileIO() {
-        return dataTable.fileIO();
+        return wrapped.fileIO();
     }
 
     /** Push down predicate to dataScan and dataRead. */
@@ -206,8 +244,23 @@ public class AuditLogTable implements DataTable, ReadonlyTable {
         }
 
         @Override
+        public Integer parallelism() {
+            return snapshotReader.parallelism();
+        }
+
+        @Override
         public SnapshotManager snapshotManager() {
             return snapshotReader.snapshotManager();
+        }
+
+        @Override
+        public ManifestsReader manifestsReader() {
+            return snapshotReader.manifestsReader();
+        }
+
+        @Override
+        public List<ManifestEntry> readManifest(ManifestFileMeta manifest) {
+            return snapshotReader.readManifest(manifest);
         }
 
         @Override
@@ -218,6 +271,11 @@ public class AuditLogTable implements DataTable, ReadonlyTable {
         @Override
         public SplitGenerator splitGenerator() {
             return snapshotReader.splitGenerator();
+        }
+
+        @Override
+        public FileStorePathFactory pathFactory() {
+            return snapshotReader.pathFactory();
         }
 
         public SnapshotReader withSnapshot(long snapshotId) {
@@ -248,6 +306,12 @@ public class AuditLogTable implements DataTable, ReadonlyTable {
         }
 
         @Override
+        public SnapshotReader withPartitionFilter(List<BinaryRow> partitions) {
+            snapshotReader.withPartitionFilter(partitions);
+            return this;
+        }
+
+        @Override
         public SnapshotReader withMode(ScanMode scanMode) {
             snapshotReader.withMode(scanMode);
             return this;
@@ -260,8 +324,8 @@ public class AuditLogTable implements DataTable, ReadonlyTable {
         }
 
         @Override
-        public SnapshotReader withDataFileTimeMills(long dataFileTimeMills) {
-            snapshotReader.withDataFileTimeMills(dataFileTimeMills);
+        public SnapshotReader withManifestEntryFilter(Filter<ManifestEntry> filter) {
+            snapshotReader.withManifestEntryFilter(filter);
             return this;
         }
 
@@ -318,6 +382,11 @@ public class AuditLogTable implements DataTable, ReadonlyTable {
         public List<PartitionEntry> partitionEntries() {
             return snapshotReader.partitionEntries();
         }
+
+        @Override
+        public List<BucketEntry> bucketEntries() {
+            return snapshotReader.bucketEntries();
+        }
     }
 
     private class AuditLogBatchScan implements DataTableScan {
@@ -353,6 +422,12 @@ public class AuditLogTable implements DataTable, ReadonlyTable {
         }
 
         @Override
+        public InnerTableScan withPartitionFilter(List<BinaryRow> partitions) {
+            batchScan.withPartitionFilter(partitions);
+            return this;
+        }
+
+        @Override
         public InnerTableScan withBucketFilter(Filter<Integer> bucketFilter) {
             batchScan.withBucketFilter(bucketFilter);
             return this;
@@ -370,8 +445,8 @@ public class AuditLogTable implements DataTable, ReadonlyTable {
         }
 
         @Override
-        public List<BinaryRow> listPartitions() {
-            return batchScan.listPartitions();
+        public List<PartitionEntry> listPartitionEntries() {
+            return batchScan.listPartitionEntries();
         }
 
         @Override
@@ -406,8 +481,8 @@ public class AuditLogTable implements DataTable, ReadonlyTable {
         }
 
         @Override
-        public List<BinaryRow> listPartitions() {
-            return streamScan.listPartitions();
+        public List<PartitionEntry> listPartitionEntries() {
+            return streamScan.listPartitionEntries();
         }
 
         @Nullable
@@ -463,7 +538,7 @@ public class AuditLogTable implements DataTable, ReadonlyTable {
 
         /** Default projection, just add row kind to the first. */
         private int[] defaultProjection() {
-            int dataFieldCount = dataTable.rowType().getFieldCount();
+            int dataFieldCount = wrapped.rowType().getFieldCount();
             int[] projection = new int[dataFieldCount + 1];
             projection[0] = -1;
             for (int i = 0; i < dataFieldCount; i++) {

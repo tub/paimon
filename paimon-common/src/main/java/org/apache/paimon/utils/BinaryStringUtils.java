@@ -309,8 +309,7 @@ public class BinaryStringUtils {
     /** Used by {@code CAST(x as TIMESTAMP)}. */
     public static Timestamp toTimestamp(BinaryString input, int precision)
             throws DateTimeException {
-        String str = input.toString();
-        if (StringUtils.isNumeric(str)) {
+        if (StringUtils.isNumeric(input.toString())) {
             long millis = toLong(input);
             return fromMillisToTimestamp(millis, precision);
         }

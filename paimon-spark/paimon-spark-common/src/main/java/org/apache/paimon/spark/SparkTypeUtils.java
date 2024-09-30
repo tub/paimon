@@ -18,6 +18,8 @@
 
 package org.apache.paimon.spark;
 
+import org.apache.paimon.spark.util.shim.TypeUtils;
+import org.apache.paimon.table.Table;
 import org.apache.paimon.types.ArrayType;
 import org.apache.paimon.types.BigIntType;
 import org.apache.paimon.types.BinaryType;
@@ -57,6 +59,15 @@ import java.util.concurrent.atomic.AtomicInteger;
 public class SparkTypeUtils {
 
     private SparkTypeUtils() {}
+
+    public static StructType toSparkPartitionType(Table table) {
+        int[] projections = table.rowType().getFieldIndices(table.partitionKeys());
+        List<DataField> partitionTypes = new ArrayList<>();
+        for (int i : projections) {
+            partitionTypes.add(table.rowType().getFields().get(i));
+        }
+        return (StructType) SparkTypeUtils.fromPaimonType(new RowType(false, partitionTypes));
+    }
 
     public static StructType fromPaimonRowType(RowType type) {
         return (StructType) fromPaimonType(type);
@@ -150,7 +161,11 @@ public class SparkTypeUtils {
 
         @Override
         public DataType visit(TimestampType timestampType) {
-            return DataTypes.TimestampType;
+            if (TypeUtils.treatPaimonTimestampTypeAsSparkTimestampType()) {
+                return DataTypes.TimestampType;
+            } else {
+                return DataTypes.TimestampNTZType;
+            }
         }
 
         @Override
@@ -308,13 +323,20 @@ public class SparkTypeUtils {
             } else if (atomic instanceof org.apache.spark.sql.types.DateType) {
                 return new DateType();
             } else if (atomic instanceof org.apache.spark.sql.types.TimestampType) {
-                return new TimestampType();
+                if (TypeUtils.treatPaimonTimestampTypeAsSparkTimestampType()) {
+                    return new TimestampType();
+                } else {
+                    return new LocalZonedTimestampType();
+                }
             } else if (atomic instanceof org.apache.spark.sql.types.DecimalType) {
                 return new DecimalType(
                         ((org.apache.spark.sql.types.DecimalType) atomic).precision(),
                         ((org.apache.spark.sql.types.DecimalType) atomic).scale());
             } else if (atomic instanceof org.apache.spark.sql.types.BinaryType) {
                 return new VarBinaryType(VarBinaryType.MAX_LENGTH);
+            } else if (atomic instanceof org.apache.spark.sql.types.TimestampNTZType) {
+                // Move TimestampNTZType to the end for compatibility with spark3.3 and below
+                return new TimestampType();
             }
 
             throw new UnsupportedOperationException(

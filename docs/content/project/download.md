@@ -34,6 +34,7 @@ This documentation is a guide for downloading Paimon Jars.
 
 | Version          | Jar                                                                                                                                                                   |
 |------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| Flink 1.20       | [paimon-flink-1.20-{{< version >}}.jar](https://repository.apache.org/snapshots/org/apache/paimon/paimon-flink-1.20/{{< version >}}/)                                 |
 | Flink 1.19       | [paimon-flink-1.19-{{< version >}}.jar](https://repository.apache.org/snapshots/org/apache/paimon/paimon-flink-1.19/{{< version >}}/)                                 |
 | Flink 1.18       | [paimon-flink-1.18-{{< version >}}.jar](https://repository.apache.org/snapshots/org/apache/paimon/paimon-flink-1.18/{{< version >}}/)                                 |
 | Flink 1.17       | [paimon-flink-1.17-{{< version >}}.jar](https://repository.apache.org/snapshots/org/apache/paimon/paimon-flink-1.17/{{< version >}}/)                                 |
@@ -44,7 +45,6 @@ This documentation is a guide for downloading Paimon Jars.
 | Spark 3.4        | [paimon-spark-3.4-{{< version >}}.jar](https://repository.apache.org/snapshots/org/apache/paimon/paimon-spark-3.4/{{< version >}}/)                                   |
 | Spark 3.3        | [paimon-spark-3.3-{{< version >}}.jar](https://repository.apache.org/snapshots/org/apache/paimon/paimon-spark-3.3/{{< version >}}/)                                   |
 | Spark 3.2        | [paimon-spark-3.2-{{< version >}}.jar](https://repository.apache.org/snapshots/org/apache/paimon/paimon-spark-3.2/{{< version >}}/)                                   |
-| Spark 3.1        | [paimon-spark-3.1-{{< version >}}.jar](https://repository.apache.org/snapshots/org/apache/paimon/paimon-spark-3.1/{{< version >}}/)                                   |
 | Hive 3.1         | [paimon-hive-connector-3.1-{{< version >}}.jar](https://repository.apache.org/snapshots/org/apache/paimon/paimon-hive-connector-3.1/{{< version >}}/)                 |
 | Hive 2.3         | [paimon-hive-connector-2.3-{{< version >}}.jar](https://repository.apache.org/snapshots/org/apache/paimon/paimon-hive-connector-2.3/{{< version >}}/)                 |
 | Hive 2.2         | [paimon-hive-connector-2.2-{{< version >}}.jar](https://repository.apache.org/snapshots/org/apache/paimon/paimon-hive-connector-2.2/{{< version >}}/)                 |
@@ -63,6 +63,7 @@ This documentation is a guide for downloading Paimon Jars.
 
 | Version          | Jar                                                                                                                                                                                                                     |
 |------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| Flink 1.20       | [paimon-flink-1.20-{{< version >}}.jar](https://repo.maven.apache.org/maven2/org/apache/paimon/paimon-flink-1.20/{{< version >}}/paimon-flink-1.20-{{< version >}}.jar)                                                 |
 | Flink 1.19       | [paimon-flink-1.19-{{< version >}}.jar](https://repo.maven.apache.org/maven2/org/apache/paimon/paimon-flink-1.19/{{< version >}}/paimon-flink-1.19-{{< version >}}.jar)                                                 |
 | Flink 1.18       | [paimon-flink-1.18-{{< version >}}.jar](https://repo.maven.apache.org/maven2/org/apache/paimon/paimon-flink-1.18/{{< version >}}/paimon-flink-1.18-{{< version >}}.jar)                                                 |
 | Flink 1.17       | [paimon-flink-1.17-{{< version >}}.jar](https://repo.maven.apache.org/maven2/org/apache/paimon/paimon-flink-1.17/{{< version >}}/paimon-flink-1.17-{{< version >}}.jar)                                                 |
@@ -73,7 +74,6 @@ This documentation is a guide for downloading Paimon Jars.
 | Spark 3.4        | [paimon-spark-3.4-{{< version >}}.jar](https://repo.maven.apache.org/maven2/org/apache/paimon/paimon-spark-3.4/{{< version >}}/paimon-spark-3.4-{{< version >}}.jar)                                                    |
 | Spark 3.3        | [paimon-spark-3.3-{{< version >}}.jar](https://repo.maven.apache.org/maven2/org/apache/paimon/paimon-spark-3.3/{{< version >}}/paimon-spark-3.3-{{< version >}}.jar)                                                    |
 | Spark 3.2        | [paimon-spark-3.2-{{< version >}}.jar](https://repo.maven.apache.org/maven2/org/apache/paimon/paimon-spark-3.2/{{< version >}}/paimon-spark-3.2-{{< version >}}.jar)                                                    |
-| Spark 3.1        | [paimon-spark-3.1-{{< version >}}.jar](https://repo.maven.apache.org/maven2/org/apache/paimon/paimon-spark-3.1/{{< version >}}/paimon-spark-3.1-{{< version >}}.jar)                                                    |
 | Hive 3.1         | [paimon-hive-connector-3.1-{{< version >}}.jar](https://repo.maven.apache.org/maven2/org/apache/paimon/paimon-hive-connector-3.1/{{< version >}}/paimon-hive-connector-3.1-{{< version >}}.jar)                         |
 | Hive 2.3         | [paimon-hive-connector-2.3-{{< version >}}.jar](https://repo.maven.apache.org/maven2/org/apache/paimon/paimon-hive-connector-2.3/{{< version >}}/paimon-hive-connector-2.3-{{< version >}}.jar)                         |
 | Hive 2.2         | [paimon-hive-connector-2.2-{{< version >}}.jar](https://repo.maven.apache.org/maven2/org/apache/paimon/paimon-hive-connector-2.2/{{< version >}}/paimon-hive-connector-2.2-{{< version >}}.jar)                         |

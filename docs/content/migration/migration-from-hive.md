@@ -28,7 +28,7 @@ under the License.
 
 Apache Hive supports ORC, Parquet file formats that could be migrated to Paimon. 
 When migrating data to a paimon table, the origin table will be permanently disappeared. So please back up your data if you
-still need the original table. The migrated table will be [append table]({{< ref "append-table/append-table" >}}).
+still need the original table. The migrated table will be [append table]({{< ref "append-table/overview" >}}).
 
 Now, we can use paimon hive catalog with Migrate Table Procedure and Migrate File Procedure to totally migrate a table from hive to paimon.
 At the same time, you can use paimon hive catalog with Migrate Database Procedure to fully synchronize all tables in the database to paimon.
@@ -56,14 +56,18 @@ CREATE CATALOG PAIMON WITH ('type'='paimon', 'metastore' = 'hive', 'uri' = 'thri
 
 USE CATALOG PAIMON;
 
-CALL sys.migrate_table('hive', 'default.hivetable', 'file.format=orc');
+CALL sys.migrate_table(connector => 'hive', source_table => 'default.hivetable', options => 'file.format=orc');
 ```
 After invoke, "hivetable" will totally convert to paimon format. Writing and reading the table by old "hive way" will fail.
 We can add our table properties while importing by sys.migrate_table('<database>.<tablename>', '<tableproperties>').
 <tableproperties> here should be separated by ",".  For example:
 
 ```sql
-CALL sys.migrate_table('hive', 'my_db.wait_to_upgrate', 'file.format=orc,read.batch-size=2096,write-only=true')
+CALL sys.migrate_table(
+    connector => 'hive', 
+    source_table => 'my_db.wait_to_upgrate', 
+    options => 'file.format=orc,read.batch-size=2096,write-only=true'
+);
 ```
 
 If your flink version is below 1.17, you can use flink action to achieve this:
@@ -101,14 +105,18 @@ CREATE CATALOG PAIMON WITH ('type'='paimon', 'metastore' = 'hive', 'uri' = 'thri
 
 USE CATALOG PAIMON;
 
-CALL sys.migrate_database('hive', 'default', 'file.format=orc');
+CALL sys.migrate_database(connector => 'hive', source_database => 'default', options => 'file.format=orc');
 ```
 After invoke, all tables in "default" database will totally convert to paimon format. Writing and reading the table by old "hive way" will fail.
 We can add our table properties while importing by sys.migrate_database('<database>', '<tableproperties>').
 <tableproperties> here should be separated by ",".  For example:
 
 ```sql
-CALL sys.migrate_database('hive', 'my_db', 'file.format=orc,read.batch-size=2096,write-only=true')
+CALL sys.migrate_database(
+    connector => 'hive', 
+    source_database => 'my_db', 
+    options => 'file.format=orc,read.batch-size=2096,write-only=true'
+);
 ```
 
 If your flink version is below 1.17, you can use flink action to achieve this:
@@ -146,7 +154,7 @@ CREATE CATALOG PAIMON WITH ('type'='paimon', 'metastore' = 'hive', 'uri' = 'thri
 
 USE CATALOG PAIMON;
 
-CALL sys.migrate_file('hive', 'default.hivetable', 'default.paimontable');
+CALL sys.migrate_file(connector => 'hive', source_table => 'default.hivetable', target_table => 'default.paimontable');
 ```
 After invoke, "hivetable" will disappear. And all files will be moved and renamed to paimon directory. "paimontable" here must have the same
 partition keys with "hivetable", and "paimontable" should be in unaware-bucket mode.

@@ -40,6 +40,7 @@ import org.apache.paimon.table.source.StreamTableScan;
 import org.apache.paimon.table.source.TableRead;
 import org.apache.paimon.types.DataType;
 import org.apache.paimon.types.DataTypes;
+import org.apache.paimon.types.RowKind;
 import org.apache.paimon.types.RowType;
 
 import org.apache.flink.api.common.ExecutionConfig;
@@ -54,10 +55,13 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.lang.reflect.Field;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
+import java.util.UUID;
+import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -66,10 +70,12 @@ public class WriterOperatorTest {
 
     @TempDir public java.nio.file.Path tempDir;
     private Path tablePath;
+    private String commitUser;
 
     @BeforeEach
     public void before() {
         tablePath = new Path(tempDir.toString());
+        commitUser = UUID.randomUUID().toString();
     }
 
     @Test
@@ -109,22 +115,7 @@ public class WriterOperatorTest {
 
     private void testMetricsImpl(FileStoreTable fileStoreTable) throws Exception {
         String tableName = tablePath.getName();
-        RowDataStoreWriteOperator operator =
-                new RowDataStoreWriteOperator(
-                        fileStoreTable,
-                        null,
-                        (table, commitUser, state, ioManager, memoryPool, metricGroup) ->
-                                new StoreSinkWriteImpl(
-                                        table,
-                                        commitUser,
-                                        state,
-                                        ioManager,
-                                        false,
-                                        false,
-                                        true,
-                                        memoryPool,
-                                        metricGroup),
-                        "test");
+        RowDataStoreWriteOperator operator = getStoreSinkWriteOperator(fileStoreTable);
         OneInputStreamOperatorTestHarness<InternalRow, Committable> harness =
                 createHarness(operator);
 
@@ -186,7 +177,7 @@ public class WriterOperatorTest {
         OneInputStreamOperatorTestHarness<InternalRow, Committable> harness =
                 createHarness(operator);
 
-        TableCommitImpl commit = fileStoreTable.newCommit("test");
+        TableCommitImpl commit = fileStoreTable.newCommit(commitUser);
 
         TypeSerializer<Committable> serializer =
                 new CommittableTypeInfo().createSerializer(new ExecutionConfig());
@@ -249,6 +240,192 @@ public class WriterOperatorTest {
                 .containsExactlyInAnyOrder("+I[1, 10, 101]", "+I[2, 20, 200]", "+I[3, 30, 301]");
     }
 
+    @Test
+    public void testChangelog() throws Exception {
+        testChangelog(false);
+    }
+
+    @Test
+    public void testChangelogWithInsertOnly() throws Exception {
+        testChangelog(true);
+    }
+
+    private void testChangelog(boolean insertOnly) throws Exception {
+        RowType rowType =
+                RowType.of(
+                        new DataType[] {DataTypes.INT(), DataTypes.INT(), DataTypes.INT()},
+                        new String[] {"pt", "k", "v"});
+
+        Options options = new Options();
+        options.set("bucket", "1");
+        options.set("changelog-producer", "input");
+
+        FileStoreTable fileStoreTable =
+                createFileStoreTable(
+                        rowType, Arrays.asList("pt", "k"), Collections.singletonList("k"), options);
+        RowDataStoreWriteOperator operator = getStoreSinkWriteOperator(fileStoreTable);
+        OneInputStreamOperatorTestHarness<InternalRow, Committable> harness =
+                createHarness(operator);
+
+        TableCommitImpl commit = fileStoreTable.newCommit(commitUser);
+
+        TypeSerializer<Committable> serializer =
+                new CommittableTypeInfo().createSerializer(new ExecutionConfig());
+        harness.setup(serializer);
+        harness.open();
+
+        if (insertOnly) {
+            Field field = TableWriteOperator.class.getDeclaredField("write");
+            field.setAccessible(true);
+            StoreSinkWrite write = (StoreSinkWrite) field.get(operator);
+            write.withInsertOnly(true);
+        }
+
+        // write basic records
+        harness.processElement(GenericRow.ofKind(RowKind.INSERT, 1, 10, 100), 1);
+        harness.processElement(GenericRow.ofKind(RowKind.DELETE, 1, 10, 200), 2);
+        harness.processElement(GenericRow.ofKind(RowKind.INSERT, 1, 10, 300), 3);
+        harness.prepareSnapshotPreBarrier(1);
+        harness.snapshot(1, 10);
+        harness.notifyOfCompletedCheckpoint(1);
+        commitAll(harness, commit, 1);
+        harness.close();
+        commit.close();
+
+        // check result
+        ReadBuilder readBuilder = fileStoreTable.newReadBuilder();
+        StreamTableScan scan = readBuilder.newStreamScan();
+        scan.restore(1L);
+        List<Split> splits = scan.plan().splits();
+        TableRead read = readBuilder.newRead();
+        RecordReader<InternalRow> reader = read.createReader(splits);
+        List<String> actual = new ArrayList<>();
+        reader.forEachRemaining(
+                row ->
+                        actual.add(
+                                String.format(
+                                        "%s[%d, %d, %d]",
+                                        row.getRowKind().shortString(),
+                                        row.getInt(0),
+                                        row.getInt(1),
+                                        row.getInt(2))));
+        if (insertOnly) {
+            assertThat(actual).containsExactlyInAnyOrder("+I[1, 10, 300]");
+        } else {
+            assertThat(actual)
+                    .containsExactlyInAnyOrder(
+                            "+I[1, 10, 100]", "-D[1, 10, 200]", "+I[1, 10, 300]");
+        }
+    }
+
+    @Test
+    public void testNumWritersMetric() throws Exception {
+        String tableName = tablePath.getName();
+        RowType rowType =
+                RowType.of(
+                        new DataType[] {DataTypes.INT(), DataTypes.INT(), DataTypes.INT()},
+                        new String[] {"pt", "k", "v"});
+
+        Options options = new Options();
+        options.set("bucket", "1");
+        options.set("write-buffer-size", "256 b");
+        options.set("page-size", "32 b");
+
+        FileStoreTable fileStoreTable =
+                createFileStoreTable(
+                        rowType,
+                        Arrays.asList("pt", "k"),
+                        Collections.singletonList("pt"),
+                        options);
+        TableCommitImpl commit = fileStoreTable.newCommit(commitUser);
+
+        RowDataStoreWriteOperator rowDataStoreWriteOperator =
+                getStoreSinkWriteOperator(fileStoreTable);
+        OneInputStreamOperatorTestHarness<InternalRow, Committable> harness =
+                createHarness(rowDataStoreWriteOperator);
+
+        TypeSerializer<Committable> serializer =
+                new CommittableTypeInfo().createSerializer(new ExecutionConfig());
+        harness.setup(serializer);
+        harness.open();
+
+        OperatorMetricGroup metricGroup = rowDataStoreWriteOperator.getMetricGroup();
+        MetricGroup writerBufferMetricGroup =
+                metricGroup
+                        .addGroup("paimon")
+                        .addGroup("table", tableName)
+                        .addGroup("writerBuffer");
+
+        Gauge<Integer> numWriters =
+                TestingMetricUtils.getGauge(writerBufferMetricGroup, "numWriters");
+
+        // write into three partitions
+        harness.processElement(GenericRow.of(1, 10, 100), 1);
+        harness.processElement(GenericRow.of(2, 20, 200), 2);
+        harness.processElement(GenericRow.of(3, 30, 300), 3);
+        assertThat(numWriters.getValue()).isEqualTo(3);
+
+        // commit messages in three partitions, no writer should be cleaned
+        harness.prepareSnapshotPreBarrier(1);
+        harness.snapshot(1, 10);
+        harness.notifyOfCompletedCheckpoint(1);
+        commit.commit(
+                1,
+                harness.extractOutputValues().stream()
+                        .map(c -> (CommitMessage) c.wrappedCommittable())
+                        .collect(Collectors.toList()));
+        assertThat(numWriters.getValue()).isEqualTo(3);
+
+        // write into two partitions
+        harness.processElement(GenericRow.of(1, 11, 110), 11);
+        harness.processElement(GenericRow.of(3, 13, 130), 13);
+        // checkpoint has not come yet, so no writer should be cleaned
+        assertThat(numWriters.getValue()).isEqualTo(3);
+
+        // checkpoint comes, note that prepareSnapshotPreBarrier is called before commit, so writer
+        // of partition 2 is not cleaned, but it should be cleaned in the next checkpoint
+        harness.prepareSnapshotPreBarrier(2);
+        harness.snapshot(2, 20);
+        harness.notifyOfCompletedCheckpoint(2);
+        commit.commit(
+                2,
+                harness.extractOutputValues().stream()
+                        .map(c -> (CommitMessage) c.wrappedCommittable())
+                        .collect(Collectors.toList()));
+        harness.prepareSnapshotPreBarrier(3);
+
+        // writer of partition 2 should be cleaned in this snapshot
+        harness.snapshot(3, 30);
+        harness.notifyOfCompletedCheckpoint(3);
+        assertThat(numWriters.getValue()).isEqualTo(2);
+
+        harness.endInput();
+        harness.close();
+        commit.close();
+    }
+
+    // ------------------------------------------------------------------------
+    //  Test utils
+    // ------------------------------------------------------------------------
+
+    private RowDataStoreWriteOperator getStoreSinkWriteOperator(FileStoreTable fileStoreTable) {
+        return new RowDataStoreWriteOperator(
+                fileStoreTable,
+                null,
+                (table, commitUser, state, ioManager, memoryPool, metricGroup) ->
+                        new StoreSinkWriteImpl(
+                                table,
+                                commitUser,
+                                state,
+                                ioManager,
+                                false,
+                                false,
+                                true,
+                                memoryPool,
+                                metricGroup),
+                commitUser);
+    }
+
     private RowDataStoreWriteOperator getAsyncLookupWriteOperator(
             FileStoreTable fileStoreTable, boolean waitCompaction) {
         return new RowDataStoreWriteOperator(
@@ -265,7 +442,7 @@ public class WriterOperatorTest {
                                 true,
                                 memoryPool,
                                 metricGroup),
-                "test");
+                commitUser);
     }
 
     @SuppressWarnings("unchecked")

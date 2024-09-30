@@ -33,13 +33,13 @@ import org.apache.paimon.mergetree.MergeSorter;
 import org.apache.paimon.mergetree.MergeTreeReaders;
 import org.apache.paimon.mergetree.SortedRun;
 import org.apache.paimon.mergetree.compact.ConcatRecordReader;
-import org.apache.paimon.mergetree.compact.ConcatRecordReader.ReaderSupplier;
 import org.apache.paimon.mergetree.compact.IntervalPartition;
 import org.apache.paimon.mergetree.compact.MergeFunctionFactory;
 import org.apache.paimon.mergetree.compact.MergeFunctionFactory.AdjustedProjection;
 import org.apache.paimon.mergetree.compact.MergeFunctionWrapper;
 import org.apache.paimon.mergetree.compact.ReducerMergeFunctionWrapper;
 import org.apache.paimon.predicate.Predicate;
+import org.apache.paimon.reader.ReaderSupplier;
 import org.apache.paimon.reader.RecordReader;
 import org.apache.paimon.schema.TableSchema;
 import org.apache.paimon.table.source.DataSplit;
@@ -56,11 +56,9 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.List;
-import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
 
-import static org.apache.paimon.io.DataFilePathFactory.CHANGELOG_FILE_PREFIX;
 import static org.apache.paimon.predicate.PredicateBuilder.containsFields;
 import static org.apache.paimon.predicate.PredicateBuilder.splitAnd;
 
@@ -299,26 +297,10 @@ public class MergeFileSplitRead implements SplitRead<KeyValue> {
                         onlyFilterKey ? filtersForKeys : filtersForAll);
         List<ReaderSupplier<KeyValue>> suppliers = new ArrayList<>();
         for (DataFileMeta file : files) {
-            suppliers.add(
-                    () -> {
-                        // We need to check extraFiles to be compatible with Paimon 0.2.
-                        // See comments on DataFileMeta#extraFiles.
-                        String fileName = changelogFile(file).orElse(file.fileName());
-                        return readerFactory.createRecordReader(
-                                file.schemaId(), fileName, file.fileSize(), file.level());
-                    });
+            suppliers.add(() -> readerFactory.createRecordReader(file));
         }
 
         return projectOuter(ConcatRecordReader.create(suppliers));
-    }
-
-    private Optional<String> changelogFile(DataFileMeta fileMeta) {
-        for (String file : fileMeta.extraFiles()) {
-            if (file.startsWith(CHANGELOG_FILE_PREFIX)) {
-                return Optional.of(file);
-            }
-        }
-        return Optional.empty();
     }
 
     private RecordReader<KeyValue> projectKey(RecordReader<KeyValue> reader) {

@@ -28,7 +28,7 @@ under the License.
 
 ## Preparation
 
-Paimon currently supports Spark 3.5, 3.4, 3.3, 3.2 and 3.1. We recommend the latest Spark version for a better experience.
+Paimon currently supports Spark 3.5, 3.4, 3.3, and 3.2. We recommend the latest Spark version for a better experience.
 
 Download the jar file with corresponding version.
 
@@ -40,7 +40,6 @@ Download the jar file with corresponding version.
 | Spark 3.4 | [paimon-spark-3.4-{{< version >}}.jar](https://repo.maven.apache.org/maven2/org/apache/paimon/paimon-spark-3.4/{{< version >}}/paimon-spark-3.4-{{< version >}}.jar) |
 | Spark 3.3 | [paimon-spark-3.3-{{< version >}}.jar](https://repo.maven.apache.org/maven2/org/apache/paimon/paimon-spark-3.3/{{< version >}}/paimon-spark-3.3-{{< version >}}.jar) |
 | Spark 3.2 | [paimon-spark-3.2-{{< version >}}.jar](https://repo.maven.apache.org/maven2/org/apache/paimon/paimon-spark-3.2/{{< version >}}/paimon-spark-3.2-{{< version >}}.jar) |
-| Spark 3.1 | [paimon-spark-3.1-{{< version >}}.jar](https://repo.maven.apache.org/maven2/org/apache/paimon/paimon-spark-3.1/{{< version >}}/paimon-spark-3.1-{{< version >}}.jar) |
 
 {{< /stable >}}
 
@@ -52,7 +51,6 @@ Download the jar file with corresponding version.
 | Spark 3.4 | [paimon-spark-3.4-{{< version >}}.jar](https://repository.apache.org/snapshots/org/apache/paimon/paimon-spark-3.4/{{< version >}}/) |
 | Spark 3.3 | [paimon-spark-3.3-{{< version >}}.jar](https://repository.apache.org/snapshots/org/apache/paimon/paimon-spark-3.3/{{< version >}}/) |
 | Spark 3.2 | [paimon-spark-3.2-{{< version >}}.jar](https://repository.apache.org/snapshots/org/apache/paimon/paimon-spark-3.2/{{< version >}}/) |
-| Spark 3.1 | [paimon-spark-3.1-{{< version >}}.jar](https://repository.apache.org/snapshots/org/apache/paimon/paimon-spark-3.1/{{< version >}}/) |
 
 {{< /unstable >}}
 
@@ -178,10 +176,6 @@ tblproperties (
 {{< /tabs >}}
 
 ## Insert Table
-
-{{< hint info >}}
-Paimon currently supports Spark 3.2+ for SQL write.
-{{< /hint >}}
 
 ```sql
 INSERT INTO my_table VALUES (1, 'Hi'), (2, 'Hello');
@@ -310,7 +304,12 @@ All Spark's data types are available in package `org.apache.spark.sql.types`.
     </tr>
     <tr>
       <td><code>TimestampType</code></td>
-      <td><code>TimestampType</code>, <code>LocalZonedTimestamp</code></td>
+      <td><code>LocalZonedTimestamp</code></td>
+      <td>true</td>
+    </tr>
+    <tr>
+      <td><code>TimestampNTZType(Spark3.4+)</code></td>
+      <td><code>TimestampType</code></td>
       <td>true</td>
     </tr>
     <tr>
@@ -325,3 +324,11 @@ All Spark's data types are available in package `org.apache.spark.sql.types`.
     </tr>
     </tbody>
 </table>
+
+{{< hint warning >}}
+Due to the previous design, in Spark3.3 and below, Paimon will map both Paimon's TimestampType and LocalZonedTimestamp to Spark's TimestampType, and only correctly handle with TimestampType.
+
+Therefore, when using Spark3.3 and below, reads Paimon table with LocalZonedTimestamp type written by other engines, such as Flink, the query result of LocalZonedTimestamp type will have time zone offset, which needs to be adjusted manually.
+
+When using Spark3.4 and above, all timestamp types can be parsed correctly.
+{{< /hint >}}

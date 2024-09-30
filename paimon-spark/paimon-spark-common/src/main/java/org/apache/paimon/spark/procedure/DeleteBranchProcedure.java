@@ -60,12 +60,11 @@ public class DeleteBranchProcedure extends BaseProcedure {
     @Override
     public InternalRow[] call(InternalRow args) {
         Identifier tableIdent = toIdentifier(args.getString(0), PARAMETERS[0].name());
-        String branch = args.getString(1);
-
+        String branchStr = args.getString(1);
         return modifyPaimonTable(
                 tableIdent,
                 table -> {
-                    table.deleteBranch(branch);
+                    table.deleteBranches(branchStr);
                     InternalRow outputRow = newInternalRow(true);
                     return new InternalRow[] {outputRow};
                 });

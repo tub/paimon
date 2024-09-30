@@ -18,19 +18,23 @@
 
 package org.apache.paimon.spark.procedure;
 
+import org.apache.paimon.catalog.Catalog;
 import org.apache.paimon.operation.OrphanFilesClean;
-import org.apache.paimon.table.FileStoreTable;
-import org.apache.paimon.utils.StringUtils;
+import org.apache.paimon.spark.catalog.WithPaimonCatalog;
+import org.apache.paimon.spark.orphan.SparkOrphanFilesClean;
+import org.apache.paimon.utils.Preconditions;
 
 import org.apache.spark.sql.catalyst.InternalRow;
-import org.apache.spark.sql.connector.catalog.Identifier;
 import org.apache.spark.sql.connector.catalog.TableCatalog;
 import org.apache.spark.sql.types.Metadata;
 import org.apache.spark.sql.types.StructField;
 import org.apache.spark.sql.types.StructType;
-import org.apache.spark.unsafe.types.UTF8String;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
-import static org.apache.paimon.utils.Preconditions.checkArgument;
+import static org.apache.spark.sql.types.DataTypes.BooleanType;
+import static org.apache.spark.sql.types.DataTypes.IntegerType;
+import static org.apache.spark.sql.types.DataTypes.LongType;
 import static org.apache.spark.sql.types.DataTypes.StringType;
 
 /**
@@ -38,20 +42,27 @@ import static org.apache.spark.sql.types.DataTypes.StringType;
  *
  * <pre><code>
  *  CALL sys.remove_orphan_files(table => 'tableId', [older_than => '2023-10-31 12:00:00'])
+ *
+ *  CALL sys.remove_orphan_files(table => 'databaseName.*', [older_than => '2023-10-31 12:00:00'])
  * </code></pre>
  */
 public class RemoveOrphanFilesProcedure extends BaseProcedure {
 
+    private static final Logger LOG =
+            LoggerFactory.getLogger(RemoveOrphanFilesProcedure.class.getName());
+
     private static final ProcedureParameter[] PARAMETERS =
             new ProcedureParameter[] {
                 ProcedureParameter.required("table", StringType),
-                ProcedureParameter.optional("older_than", StringType)
+                ProcedureParameter.optional("older_than", StringType),
+                ProcedureParameter.optional("dry_run", BooleanType),
+                ProcedureParameter.optional("parallelism", IntegerType)
             };
 
     private static final StructType OUTPUT_TYPE =
             new StructType(
                     new StructField[] {
-                        new StructField("result", StringType, true, Metadata.empty())
+                        new StructField("result", LongType, true, Metadata.empty())
                     });
 
     private RemoveOrphanFilesProcedure(TableCatalog tableCatalog) {
@@ -70,27 +81,35 @@ public class RemoveOrphanFilesProcedure extends BaseProcedure {
 
     @Override
     public InternalRow[] call(InternalRow args) {
-        Identifier tableIdent = toIdentifier(args.getString(0), PARAMETERS[0].name());
-        String olderThan = args.isNullAt(1) ? null : args.getString(1);
+        org.apache.paimon.catalog.Identifier identifier;
+        String tableId = args.getString(0);
+        Preconditions.checkArgument(
+                tableId != null && !tableId.isEmpty(),
+                "Cannot handle an empty tableId for argument %s",
+                tableId);
 
-        return modifyPaimonTable(
-                tableIdent,
-                table -> {
-                    checkArgument(table instanceof FileStoreTable);
-                    OrphanFilesClean orphanFilesClean =
-                            new OrphanFilesClean((FileStoreTable) table);
-                    if (!StringUtils.isBlank(olderThan)) {
-                        orphanFilesClean.olderThan(olderThan);
-                    }
-                    try {
-                        int deleted = orphanFilesClean.clean();
-                        return new InternalRow[] {
-                            newInternalRow(UTF8String.fromString("Deleted=" + deleted))
-                        };
-                    } catch (Exception e) {
-                        throw new RuntimeException("Call remove_orphan_files error", e);
-                    }
-                });
+        if (tableId.endsWith(".*")) {
+            identifier = org.apache.paimon.catalog.Identifier.fromString(tableId);
+        } else {
+            identifier =
+                    org.apache.paimon.catalog.Identifier.fromString(
+                            toIdentifier(args.getString(0), PARAMETERS[0].name()).toString());
+        }
+        LOG.info("identifier is {}.", identifier);
+
+        Catalog catalog = ((WithPaimonCatalog) tableCatalog()).paimonCatalog();
+        long deletedFiles =
+                SparkOrphanFilesClean.executeDatabaseOrphanFiles(
+                        catalog,
+                        identifier.getDatabaseName(),
+                        identifier.getTableName(),
+                        OrphanFilesClean.olderThanMillis(
+                                args.isNullAt(1) ? null : args.getString(1)),
+                        OrphanFilesClean.createFileCleaner(
+                                catalog, !args.isNullAt(2) && args.getBoolean(2)),
+                        args.isNullAt(3) ? null : args.getInt(3));
+
+        return new InternalRow[] {newInternalRow(deletedFiles)};
     }
 
     public static ProcedureBuilder builder() {

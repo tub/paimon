@@ -18,6 +18,7 @@
 
 package org.apache.paimon.spark.procedure;
 
+import org.apache.paimon.CoreOptions;
 import org.apache.paimon.FileStore;
 import org.apache.paimon.metastore.MetastoreClient;
 import org.apache.paimon.operation.PartitionExpire;
@@ -27,14 +28,18 @@ import org.apache.paimon.utils.TimeUtils;
 import org.apache.spark.sql.catalyst.InternalRow;
 import org.apache.spark.sql.connector.catalog.Identifier;
 import org.apache.spark.sql.connector.catalog.TableCatalog;
-import org.apache.spark.sql.types.DataTypes;
 import org.apache.spark.sql.types.Metadata;
 import org.apache.spark.sql.types.StructField;
 import org.apache.spark.sql.types.StructType;
+import org.apache.spark.unsafe.types.UTF8String;
 
 import java.time.Duration;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
+import static org.apache.paimon.partition.PartitionExpireStrategy.createPartitionExpireStrategy;
 import static org.apache.spark.sql.types.DataTypes.StringType;
 
 /** A procedure to expire partitions. */
@@ -43,14 +48,16 @@ public class ExpirePartitionsProcedure extends BaseProcedure {
     private static final ProcedureParameter[] PARAMETERS =
             new ProcedureParameter[] {
                 ProcedureParameter.required("table", StringType),
-                ProcedureParameter.optional("expiration_time", StringType),
-                ProcedureParameter.optional("timestamp_formatter", StringType)
+                ProcedureParameter.required("expiration_time", StringType),
+                ProcedureParameter.optional("timestamp_formatter", StringType),
+                ProcedureParameter.optional("timestamp_pattern", StringType),
+                ProcedureParameter.optional("expire_strategy", StringType)
             };
 
     private static final StructType OUTPUT_TYPE =
             new StructType(
                     new StructField[] {
-                        new StructField("result", DataTypes.BooleanType, true, Metadata.empty())
+                        new StructField("expired_partitions", StringType, true, Metadata.empty())
                     });
 
     protected ExpirePartitionsProcedure(TableCatalog tableCatalog) {
@@ -71,19 +78,25 @@ public class ExpirePartitionsProcedure extends BaseProcedure {
     public InternalRow[] call(InternalRow args) {
         Identifier tableIdent = toIdentifier(args.getString(0), PARAMETERS[0].name());
         String expirationTime = args.getString(1);
-        String timestampFormatter = args.getString(2);
+        String timestampFormatter = args.isNullAt(2) ? null : args.getString(2);
+        String timestampPattern = args.isNullAt(3) ? null : args.getString(3);
+        String expireStrategy = args.isNullAt(4) ? null : args.getString(4);
         return modifyPaimonTable(
                 tableIdent,
                 table -> {
                     FileStoreTable fileStoreTable = (FileStoreTable) table;
                     FileStore fileStore = fileStoreTable.store();
+                    Map<String, String> map = new HashMap<>();
+                    map.put(CoreOptions.PARTITION_EXPIRATION_STRATEGY.key(), expireStrategy);
+                    map.put(CoreOptions.PARTITION_TIMESTAMP_FORMATTER.key(), timestampFormatter);
+                    map.put(CoreOptions.PARTITION_TIMESTAMP_PATTERN.key(), timestampPattern);
+
                     PartitionExpire partitionExpire =
                             new PartitionExpire(
-                                    fileStore.partitionType(),
                                     TimeUtils.parseDuration(expirationTime),
                                     Duration.ofMillis(0L),
-                                    null,
-                                    timestampFormatter,
+                                    createPartitionExpireStrategy(
+                                            CoreOptions.fromMap(map), fileStore.partitionType()),
                                     fileStore.newScan(),
                                     fileStore.newCommit(""),
                                     Optional.ofNullable(
@@ -92,9 +105,20 @@ public class ExpirePartitionsProcedure extends BaseProcedure {
                                                             .metastoreClientFactory())
                                             .map(MetastoreClient.Factory::create)
                                             .orElse(null));
-                    partitionExpire.expire(Long.MAX_VALUE);
-                    InternalRow outputRow = newInternalRow(true);
-                    return new InternalRow[] {outputRow};
+                    List<Map<String, String>> expired = partitionExpire.expire(Long.MAX_VALUE);
+                    return expired == null || expired.isEmpty()
+                            ? new InternalRow[] {
+                                newInternalRow(UTF8String.fromString("No expired partitions."))
+                            }
+                            : expired.stream()
+                                    .map(
+                                            x -> {
+                                                String r = x.toString();
+                                                return newInternalRow(
+                                                        UTF8String.fromString(
+                                                                r.substring(1, r.length() - 1)));
+                                            })
+                                    .toArray(InternalRow[]::new);
                 });
     }
 

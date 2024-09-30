@@ -18,19 +18,25 @@
 
 package org.apache.paimon.table;
 
+import org.apache.paimon.Snapshot;
 import org.apache.paimon.annotation.Experimental;
 import org.apache.paimon.annotation.Public;
+import org.apache.paimon.manifest.IndexManifestEntry;
+import org.apache.paimon.manifest.ManifestEntry;
+import org.apache.paimon.manifest.ManifestFileMeta;
 import org.apache.paimon.stats.Statistics;
 import org.apache.paimon.table.sink.BatchWriteBuilder;
 import org.apache.paimon.table.sink.StreamWriteBuilder;
 import org.apache.paimon.table.source.ReadBuilder;
 import org.apache.paimon.types.RowType;
+import org.apache.paimon.utils.SimpleFileReader;
 
 import java.io.Serializable;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.OptionalLong;
 
 /**
  * A table provides basic abstraction for table type and table scan and table read.
@@ -44,6 +50,10 @@ public interface Table extends Serializable {
 
     /** A name to identify this table. */
     String name();
+
+    default String fullName() {
+        return name();
+    }
 
     /** Returns the row type of this table. */
     RowType rowType();
@@ -69,6 +79,26 @@ public interface Table extends Serializable {
     /** Copy this table with adding dynamic options. */
     Table copy(Map<String, String> dynamicOptions);
 
+    /** Get the latest snapshot id for this table, or empty if there are no snapshots. */
+    @Experimental
+    OptionalLong latestSnapshotId();
+
+    /** Get the {@link Snapshot} from snapshot id. */
+    @Experimental
+    Snapshot snapshot(long snapshotId);
+
+    /** Reader to read manifest file meta from manifest list file. */
+    @Experimental
+    SimpleFileReader<ManifestFileMeta> manifestListReader();
+
+    /** Reader to read manifest entry from manifest file. */
+    @Experimental
+    SimpleFileReader<ManifestEntry> manifestFileReader();
+
+    /** Reader to read index manifest entry from index manifest file. */
+    @Experimental
+    SimpleFileReader<IndexManifestEntry> indexManifestFileReader();
+
     /** Rollback table's state to a specific snapshot. */
     @Experimental
     void rollbackTo(long snapshotId);
@@ -91,17 +121,21 @@ public interface Table extends Serializable {
     @Experimental
     void deleteTag(String tagName);
 
+    /** Delete tags, tags are separated by commas. */
+    @Experimental
+    default void deleteTags(String tagNames) {
+        for (String tagName : tagNames.split(",")) {
+            deleteTag(tagName);
+        }
+    }
+
     /** Rollback table's state to a specific tag. */
     @Experimental
     void rollbackTo(String tagName);
 
-    /** Create a empty branch. */
+    /** Create an empty branch. */
     @Experimental
     void createBranch(String branchName);
-
-    /** Create a branch from given snapshot. */
-    @Experimental
-    void createBranch(String branchName, long snapshotId);
 
     /** Create a branch from given tag. */
     @Experimental
@@ -111,12 +145,17 @@ public interface Table extends Serializable {
     @Experimental
     void deleteBranch(String branchName);
 
+    /** Delete branches, branches are separated by commas. */
+    @Experimental
+    default void deleteBranches(String branchNames) {
+        for (String branch : branchNames.split(",")) {
+            deleteBranch(branch);
+        }
+    }
+
     /** Merge a branch to main branch. */
     @Experimental
-    void mergeBranch(String branchName);
-
-    @Experimental
-    void replaceBranch(String fromBranch);
+    void fastForward(String branchName);
 
     /** Manually expire snapshots, parameters can be controlled independently of table options. */
     @Experimental

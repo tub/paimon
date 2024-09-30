@@ -98,7 +98,9 @@ public class FileStoreLookupFunction implements Serializable, Closeable {
 
     public FileStoreLookupFunction(
             Table table, int[] projection, int[] joinKeyIndex, @Nullable Predicate predicate) {
-        TableScanUtils.streamingReadingValidate(table);
+        if (!TableScanUtils.supportCompactDiffStreamingReading(table)) {
+            TableScanUtils.streamingReadingValidate(table);
+        }
 
         this.table = table;
         this.partitionLoader = DynamicPartitionLoader.of(table);
@@ -108,10 +110,6 @@ public class FileStoreLookupFunction implements Serializable, Closeable {
                 Arrays.stream(joinKeyIndex)
                         .mapToObj(i -> table.rowType().getFieldNames().get(projection[i]))
                         .collect(Collectors.toList());
-
-        if (partitionLoader != null) {
-            partitionLoader.addJoinKeys(joinKeys);
-        }
 
         this.projectFields =
                 Arrays.stream(projection)
@@ -123,6 +121,10 @@ public class FileStoreLookupFunction implements Serializable, Closeable {
             if (!projectFields.contains(field)) {
                 projectFields.add(field);
             }
+        }
+
+        if (partitionLoader != null) {
+            partitionLoader.addPartitionKeysTo(joinKeys, projectFields);
         }
 
         this.predicate = predicate;

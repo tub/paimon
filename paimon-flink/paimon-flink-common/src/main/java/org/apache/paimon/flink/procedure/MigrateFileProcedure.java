@@ -20,8 +20,11 @@ package org.apache.paimon.flink.procedure;
 
 import org.apache.paimon.catalog.Identifier;
 import org.apache.paimon.flink.utils.TableMigrationUtils;
-import org.apache.paimon.hive.HiveCatalog;
+import org.apache.paimon.migrate.Migrator;
 
+import org.apache.flink.table.annotation.ArgumentHint;
+import org.apache.flink.table.annotation.DataTypeHint;
+import org.apache.flink.table.annotation.ProcedureHint;
 import org.apache.flink.table.procedure.ProcedureContext;
 
 import java.util.Collections;
@@ -34,15 +37,43 @@ public class MigrateFileProcedure extends ProcedureBase {
         return "migrate_file";
     }
 
+    @ProcedureHint(
+            argument = {
+                @ArgumentHint(name = "connector", type = @DataTypeHint("STRING")),
+                @ArgumentHint(name = "source_table", type = @DataTypeHint("STRING")),
+                @ArgumentHint(name = "target_table", type = @DataTypeHint("STRING")),
+                @ArgumentHint(
+                        name = "delete_origin",
+                        type = @DataTypeHint("BOOLEAN"),
+                        isOptional = true),
+                @ArgumentHint(
+                        name = "parallelism",
+                        type = @DataTypeHint("Integer"),
+                        isOptional = true)
+            })
     public String[] call(
             ProcedureContext procedureContext,
             String connector,
             String sourceTablePath,
-            String targetPaimonTablePath)
+            String targetPaimonTablePath,
+            Boolean deleteOrigin,
+            Integer parallelism)
             throws Exception {
-        if (!(catalog instanceof HiveCatalog)) {
-            throw new IllegalArgumentException("Only support Hive Catalog");
+        if (deleteOrigin == null) {
+            deleteOrigin = true;
         }
+        Integer p = parallelism == null ? Runtime.getRuntime().availableProcessors() : parallelism;
+        migrateHandle(connector, sourceTablePath, targetPaimonTablePath, deleteOrigin, p);
+        return new String[] {"Success"};
+    }
+
+    public void migrateHandle(
+            String connector,
+            String sourceTablePath,
+            String targetPaimonTablePath,
+            boolean deleteOrigin,
+            Integer parallelism)
+            throws Exception {
         Identifier sourceTableId = Identifier.fromString(sourceTablePath);
         Identifier targetTableId = Identifier.fromString(targetPaimonTablePath);
 
@@ -51,15 +82,17 @@ public class MigrateFileProcedure extends ProcedureBase {
                     "Target paimon table does not exist: " + targetPaimonTablePath);
         }
 
-        TableMigrationUtils.getImporter(
+        Migrator importer =
+                TableMigrationUtils.getImporter(
                         connector,
-                        (HiveCatalog) catalog,
+                        catalog,
                         sourceTableId.getDatabaseName(),
                         sourceTableId.getObjectName(),
                         targetTableId.getDatabaseName(),
                         targetTableId.getObjectName(),
-                        Collections.emptyMap())
-                .executeMigrate();
-        return new String[] {"Success"};
+                        parallelism,
+                        Collections.emptyMap());
+        importer.deleteOriginTable(deleteOrigin);
+        importer.executeMigrate();
     }
 }

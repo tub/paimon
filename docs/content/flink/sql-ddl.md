@@ -187,7 +187,7 @@ If you need cross partition upsert (primary keys not contain all partition field
 {{< /hint >}}
 
 {{< hint info >}}
-By configuring [partition.expiration-time]({{< ref "maintenance/manage-partition" >}}), expired partitions can be automatically deleted.
+By configuring [partition.expiration-time]({{< ref "flink/expire-partition" >}}), expired partitions can be automatically deleted.
 {{< /hint >}}
 
 ### Specify Statistics Mode
@@ -280,10 +280,7 @@ CREATE TABLE my_table (
     PRIMARY KEY (dt, hh, user_id) NOT ENFORCED
 );
 
-CREATE TABLE my_table_like LIKE my_table;
-
--- Create Paimon Table like other connector table
-CREATE TABLE my_table_like WITH ('connector' = 'paimon') LIKE my_table;
+CREATE TABLE my_table_like LIKE my_table (EXCLUDING OPTIONS);
 ```
 
 ## Work with Flink Temporary Tables

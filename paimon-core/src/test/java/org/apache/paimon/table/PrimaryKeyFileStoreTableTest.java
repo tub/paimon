@@ -20,6 +20,7 @@ package org.apache.paimon.table;
 
 import org.apache.paimon.CoreOptions;
 import org.apache.paimon.CoreOptions.ChangelogProducer;
+import org.apache.paimon.CoreOptions.LookupLocalFileType;
 import org.apache.paimon.Snapshot;
 import org.apache.paimon.data.BinaryString;
 import org.apache.paimon.data.GenericRow;
@@ -28,6 +29,9 @@ import org.apache.paimon.disk.IOManager;
 import org.apache.paimon.disk.IOManagerImpl;
 import org.apache.paimon.fs.FileIOFinder;
 import org.apache.paimon.fs.local.LocalFileIO;
+import org.apache.paimon.io.BundleRecords;
+import org.apache.paimon.manifest.FileKind;
+import org.apache.paimon.operation.FileStoreScan;
 import org.apache.paimon.options.MemorySize;
 import org.apache.paimon.options.Options;
 import org.apache.paimon.predicate.Predicate;
@@ -46,6 +50,7 @@ import org.apache.paimon.table.sink.InnerTableCommit;
 import org.apache.paimon.table.sink.StreamTableCommit;
 import org.apache.paimon.table.sink.StreamTableWrite;
 import org.apache.paimon.table.sink.StreamWriteBuilder;
+import org.apache.paimon.table.sink.WriteSelector;
 import org.apache.paimon.table.source.DataSplit;
 import org.apache.paimon.table.source.InnerTableRead;
 import org.apache.paimon.table.source.ReadBuilder;
@@ -53,7 +58,6 @@ import org.apache.paimon.table.source.ScanMode;
 import org.apache.paimon.table.source.Split;
 import org.apache.paimon.table.source.StreamTableScan;
 import org.apache.paimon.table.source.TableRead;
-import org.apache.paimon.table.source.TableScan;
 import org.apache.paimon.table.source.snapshot.SnapshotReader;
 import org.apache.paimon.table.system.AuditLogTable;
 import org.apache.paimon.table.system.FileMonitorTable;
@@ -62,10 +66,12 @@ import org.apache.paimon.types.DataType;
 import org.apache.paimon.types.DataTypes;
 import org.apache.paimon.types.RowKind;
 import org.apache.paimon.types.RowType;
-import org.apache.paimon.utils.CompatibilityTestUtils;
+import org.apache.paimon.utils.Pair;
 
+import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.File;
@@ -75,9 +81,11 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BiFunction;
 import java.util.function.Consumer;
 import java.util.function.Function;
@@ -91,8 +99,13 @@ import static org.apache.paimon.CoreOptions.CHANGELOG_PRODUCER;
 import static org.apache.paimon.CoreOptions.ChangelogProducer.LOOKUP;
 import static org.apache.paimon.CoreOptions.DELETION_VECTORS_ENABLED;
 import static org.apache.paimon.CoreOptions.FILE_FORMAT;
+import static org.apache.paimon.CoreOptions.LOOKUP_LOCAL_FILE_TYPE;
 import static org.apache.paimon.CoreOptions.MERGE_ENGINE;
+import static org.apache.paimon.CoreOptions.MergeEngine;
+import static org.apache.paimon.CoreOptions.MergeEngine.AGGREGATE;
+import static org.apache.paimon.CoreOptions.MergeEngine.DEDUPLICATE;
 import static org.apache.paimon.CoreOptions.MergeEngine.FIRST_ROW;
+import static org.apache.paimon.CoreOptions.MergeEngine.PARTIAL_UPDATE;
 import static org.apache.paimon.CoreOptions.SNAPSHOT_EXPIRE_LIMIT;
 import static org.apache.paimon.CoreOptions.SOURCE_SPLIT_OPEN_FILE_COST;
 import static org.apache.paimon.CoreOptions.SOURCE_SPLIT_TARGET_SIZE;
@@ -135,6 +148,19 @@ public class PrimaryKeyFileStoreTableTest extends FileStoreTableTestBase {
                     rowData.getRowKind().shortString()
                             + " "
                             + COMPATIBILITY_BATCH_ROW_TO_STRING.apply(rowData);
+
+    @Test
+    public void testMultipleWriters() throws Exception {
+        WriteSelector selector =
+                createFileStoreTable(options -> options.set("bucket", "5"))
+                        .newBatchWriteBuilder()
+                        .newWriteSelector()
+                        .orElse(null);
+        assertThat(selector).isNotNull();
+        assertThat(selector.select(rowData(1, 1, 2L), 3)).isEqualTo(1);
+        assertThat(selector.select(rowData(1, 3, 4L), 3)).isEqualTo(1);
+        assertThat(selector.select(rowData(1, 5, 6L), 3)).isEqualTo(2);
+    }
 
     @Test
     public void testAsyncReader() throws Exception {
@@ -199,6 +225,49 @@ public class PrimaryKeyFileStoreTableTest extends FileStoreTableTestBase {
                         Arrays.asList(
                                 "1|10|100|binary|varbinary|mapKey:mapVal|multiset",
                                 "1|11|101|binary|varbinary|mapKey:mapVal|multiset"));
+    }
+
+    @Test
+    public void testBatchRecordsWrite() throws Exception {
+        FileStoreTable table = createFileStoreTable();
+
+        List<InternalRow> list = new ArrayList<>();
+        for (int i = 0; i < 1000; i++) {
+            list.add(rowData(i, 10, 100L));
+        }
+
+        BatchTableWrite write = table.newBatchWriteBuilder().newWrite();
+
+        write.writeBundle(
+                binaryRow(1),
+                0,
+                new BundleRecords() {
+                    @Override
+                    public long rowCount() {
+                        return 1000;
+                    }
+
+                    @Override
+                    public Iterator<InternalRow> iterator() {
+                        return list.iterator();
+                    }
+                });
+
+        List<CommitMessage> commitMessages = write.prepareCommit();
+
+        table.newBatchWriteBuilder().newCommit().commit(commitMessages);
+
+        List<Split> splits = toSplits(table.newSnapshotReader().read().dataSplits());
+        TableRead read = table.newRead();
+        AtomicInteger i = new AtomicInteger(0);
+        read.createReader(splits)
+                .forEachRemaining(
+                        r -> {
+                            i.incrementAndGet();
+                            assertThat(r.getInt(1)).isEqualTo(10);
+                            assertThat(r.getLong(2)).isEqualTo(100);
+                        });
+        Assertions.assertThat(i.get()).isEqualTo(1000);
     }
 
     @Test
@@ -532,101 +601,6 @@ public class PrimaryKeyFileStoreTableTest extends FileStoreTableTestBase {
                         "+U 2|30|231|binary|varbinary|mapKey:mapVal|multiset",
                         "-U 2|40|241|binary|varbinary|mapKey:mapVal|multiset",
                         "+U 2|40|242|binary|varbinary|mapKey:mapVal|multiset");
-    }
-
-    @Test
-    public void testStreamingChangelogCompatibility02() throws Exception {
-        // already contains 2 commits
-        CompatibilityTestUtils.unzip(
-                "compatibility/table-changelog-0.2.zip", tablePath.toUri().getPath());
-        FileStoreTable table =
-                createFileStoreTable(
-                        conf -> conf.set(CHANGELOG_PRODUCER, ChangelogProducer.INPUT),
-                        COMPATIBILITY_ROW_TYPE);
-
-        List<List<List<String>>> expected =
-                Arrays.asList(
-                        // first changelog snapshot
-                        Arrays.asList(
-                                // partition 1
-                                Arrays.asList(
-                                        "+I 1|10|100|binary|varbinary",
-                                        "+I 1|20|200|binary|varbinary",
-                                        "-D 1|10|100|binary|varbinary",
-                                        "+I 1|10|101|binary|varbinary",
-                                        "-U 1|10|101|binary|varbinary",
-                                        "+U 1|10|102|binary|varbinary"),
-                                // partition 2
-                                Collections.singletonList("+I 2|10|300|binary|varbinary")),
-                        // second changelog snapshot
-                        Arrays.asList(
-                                // partition 1
-                                Collections.singletonList("-D 1|20|200|binary|varbinary"),
-                                // partition 2
-                                Arrays.asList(
-                                        "-U 2|10|300|binary|varbinary",
-                                        "+U 2|10|301|binary|varbinary",
-                                        "+I 2|20|400|binary|varbinary")),
-                        // third changelog snapshot
-                        Arrays.asList(
-                                // partition 1
-                                Arrays.asList(
-                                        "-U 1|10|102|binary|varbinary",
-                                        "+U 1|10|103|binary|varbinary",
-                                        "+I 1|20|201|binary|varbinary"),
-                                // partition 2
-                                Collections.singletonList("-D 2|10|301|binary|varbinary")));
-
-        StreamTableScan scan = table.newStreamScan();
-        scan.restore(1L);
-
-        Function<Integer, Void> assertNextSnapshot =
-                i -> {
-                    TableScan.Plan plan = scan.plan();
-                    assertThat(plan).isNotNull();
-
-                    List<Split> splits = plan.splits();
-                    TableRead read = table.newRead();
-                    for (int j = 0; j < 2; j++) {
-                        try {
-                            assertThat(
-                                            getResult(
-                                                    read,
-                                                    splits,
-                                                    binaryRow(j + 1),
-                                                    0,
-                                                    COMPATIBILITY_CHANGELOG_ROW_TO_STRING))
-                                    .isEqualTo(expected.get(i).get(j));
-                        } catch (Exception e) {
-                            throw new RuntimeException(e);
-                        }
-                    }
-
-                    return null;
-                };
-
-        for (int i = 0; i < 2; i++) {
-            assertNextSnapshot.apply(i);
-        }
-
-        // no more changelog
-        assertThat(scan.plan().splits()).isEmpty();
-
-        // write another commit
-        StreamTableWrite write = table.newWrite(commitUser);
-        StreamTableCommit commit = table.newCommit(commitUser);
-        write.write(rowDataWithKind(RowKind.UPDATE_BEFORE, 1, 10, 102L));
-        write.write(rowDataWithKind(RowKind.UPDATE_AFTER, 1, 10, 103L));
-        write.write(rowDataWithKind(RowKind.INSERT, 1, 20, 201L));
-        write.write(rowDataWithKind(RowKind.DELETE, 2, 10, 301L));
-        commit.commit(2, write.prepareCommit(true, 2));
-        write.close();
-        commit.close();
-
-        assertNextSnapshot.apply(2);
-
-        // no more changelog
-        assertThat(scan.plan().splits()).isEmpty();
     }
 
     private void writeData() throws Exception {
@@ -1010,6 +984,107 @@ public class PrimaryKeyFileStoreTableTest extends FileStoreTableTestBase {
     }
 
     @Test
+    public void testPartialUpdateRemoveRecordOnDelete() throws Exception {
+        RowType rowType =
+                RowType.of(
+                        new DataType[] {
+                            DataTypes.INT(), DataTypes.INT(), DataTypes.INT(), DataTypes.INT()
+                        },
+                        new String[] {"pt", "a", "b", "c"});
+        FileStoreTable table =
+                createFileStoreTable(
+                        options -> {
+                            options.set("merge-engine", "partial-update");
+                            options.set("partial-update.remove-record-on-delete", "true");
+                        },
+                        rowType);
+        Function<InternalRow, String> rowToString = row -> internalRowToString(row, rowType);
+        SnapshotReader snapshotReader = table.newSnapshotReader();
+        TableRead read = table.newRead();
+        StreamTableWrite write = table.newWrite("");
+        StreamTableCommit commit = table.newCommit("");
+        // 1. inserts
+        write.write(GenericRow.of(1, 1, 3, 3));
+        write.write(GenericRow.of(1, 1, 1, 1));
+        write.write(GenericRow.of(1, 1, 2, 2));
+        commit.commit(0, write.prepareCommit(true, 0));
+        List<String> result =
+                getResult(read, toSplits(snapshotReader.read().dataSplits()), rowToString);
+        assertThat(result).containsExactlyInAnyOrder("+I[1, 1, 2, 2]");
+
+        // 2. Update Before
+        write.write(GenericRow.ofKind(RowKind.UPDATE_BEFORE, 1, 1, 2, 2));
+        commit.commit(1, write.prepareCommit(true, 1));
+        result = getResult(read, toSplits(snapshotReader.read().dataSplits()), rowToString);
+        assertThat(result).containsExactlyInAnyOrder("+I[1, 1, 2, 2]");
+
+        // 3. Update After
+        write.write(GenericRow.ofKind(RowKind.UPDATE_AFTER, 1, 1, 2, 3));
+        commit.commit(2, write.prepareCommit(true, 2));
+        result = getResult(read, toSplits(snapshotReader.read().dataSplits()), rowToString);
+        assertThat(result).containsExactlyInAnyOrder("+I[1, 1, 2, 3]");
+
+        // 4. Retracts
+        write.write(GenericRow.ofKind(RowKind.DELETE, 1, 1, 2, 3));
+        commit.commit(3, write.prepareCommit(true, 3));
+        result = getResult(read, toSplits(snapshotReader.read().dataSplits()), rowToString);
+        assertThat(result).isEmpty();
+        write.close();
+        commit.close();
+    }
+
+    @Test
+    public void testPartialUpdateWithAgg() throws Exception {
+        RowType rowType =
+                RowType.of(
+                        new DataType[] {
+                            DataTypes.INT(), DataTypes.INT(), DataTypes.INT(), DataTypes.INT()
+                        },
+                        new String[] {"pt", "a", "b", "c"});
+        FileStoreTable table =
+                createFileStoreTable(
+                        options -> {
+                            options.set("merge-engine", "partial-update");
+                            options.set("fields.a.sequence-group", "c");
+                            options.set("fields.c.aggregate-function", "sum");
+                        },
+                        rowType);
+        Function<InternalRow, String> rowToString = row -> internalRowToString(row, rowType);
+        SnapshotReader snapshotReader = table.newSnapshotReader();
+        TableRead read = table.newRead();
+        StreamTableWrite write = table.newWrite("");
+        StreamTableCommit commit = table.newCommit("");
+        // 1. inserts
+        write.write(GenericRow.of(1, 1, 3, 3));
+        write.write(GenericRow.of(1, 1, 1, 1));
+        write.write(GenericRow.of(1, 1, 2, 2));
+        commit.commit(0, write.prepareCommit(true, 0));
+        List<String> result =
+                getResult(read, toSplits(snapshotReader.read().dataSplits()), rowToString);
+        assertThat(result).containsExactlyInAnyOrder("+I[1, 1, 2, 6]");
+
+        // 2. Update Before
+        write.write(GenericRow.ofKind(RowKind.UPDATE_BEFORE, 1, 1, 2, 2));
+        commit.commit(1, write.prepareCommit(true, 1));
+        result = getResult(read, toSplits(snapshotReader.read().dataSplits()), rowToString);
+        assertThat(result).containsExactlyInAnyOrder("+I[1, 1, 2, 4]");
+
+        // 3. Update After
+        write.write(GenericRow.ofKind(RowKind.UPDATE_AFTER, 1, 1, 2, 3));
+        commit.commit(2, write.prepareCommit(true, 2));
+        result = getResult(read, toSplits(snapshotReader.read().dataSplits()), rowToString);
+        assertThat(result).containsExactlyInAnyOrder("+I[1, 1, 2, 7]");
+
+        // 4. Retracts
+        write.write(GenericRow.ofKind(RowKind.DELETE, 1, 1, 2, 3));
+        commit.commit(3, write.prepareCommit(true, 3));
+        result = getResult(read, toSplits(snapshotReader.read().dataSplits()), rowToString);
+        assertThat(result).containsExactlyInAnyOrder("+I[1, 1, 2, 4]");
+        write.close();
+        commit.close();
+    }
+
+    @Test
     public void testAggMergeFunc() throws Exception {
         RowType rowType =
                 RowType.of(
@@ -1306,6 +1381,34 @@ public class PrimaryKeyFileStoreTableTest extends FileStoreTableTestBase {
     }
 
     @Test
+    public void testStreamingReadOptimizedTable() throws Exception {
+        FileStoreTable table =
+                createFileStoreTable(options -> options.set(TARGET_FILE_SIZE, new MemorySize(1)));
+        StreamTableWrite write = table.newWrite(commitUser);
+        StreamTableCommit commit = table.newCommit(commitUser);
+
+        write.write(rowDataWithKind(RowKind.INSERT, 1, 10, 100L));
+        write.compact(binaryRow(1), 0, true);
+        commit.commit(0, write.prepareCommit(true, 0));
+
+        ReadOptimizedTable roTable = new ReadOptimizedTable(table);
+        Function<InternalRow, String> rowDataToString =
+                row ->
+                        internalRowToString(
+                                row,
+                                DataTypes.ROW(
+                                        DataTypes.INT(), DataTypes.INT(), DataTypes.BIGINT()));
+
+        TableRead read = roTable.newRead();
+        List<String> result = getResult(read, roTable.newScan().plan().splits(), rowDataToString);
+        assertThat(result).containsExactlyInAnyOrder("+I[1, 10, 100]");
+
+        assertThatThrownBy(roTable::newStreamScan)
+                .isInstanceOf(UnsupportedOperationException.class)
+                .hasMessage("Unsupported streaming scan for read optimized table");
+    }
+
+    @Test
     public void testReadDeletionVectorTable() throws Exception {
         FileStoreTable table =
                 createFileStoreTable(
@@ -1451,6 +1554,17 @@ public class PrimaryKeyFileStoreTableTest extends FileStoreTableTestBase {
     }
 
     @Test
+    public void testTableQueryForLookupLocalSortFile() throws Exception {
+        FileStoreTable table =
+                createFileStoreTable(
+                        options -> {
+                            options.set(CHANGELOG_PRODUCER, LOOKUP);
+                            options.set(LOOKUP_LOCAL_FILE_TYPE, LookupLocalFileType.SORT);
+                        });
+        innerTestTableQuery(table);
+    }
+
+    @Test
     public void testTableQueryForNormal() throws Exception {
         FileStoreTable table = createFileStoreTable();
         innerTestTableQuery(table);
@@ -1502,7 +1616,7 @@ public class PrimaryKeyFileStoreTableTest extends FileStoreTableTestBase {
                         options ->
                                 options.setString(
                                         CoreOptions.CHANGELOG_PRODUCER.key(), changelogProducer));
-        prepareRollbackTable(commitTimes, table);
+        table = prepareRollbackTable(commitTimes, table);
 
         int t1 = 1;
         int t2 = commitTimes - 3;
@@ -1540,6 +1654,62 @@ public class PrimaryKeyFileStoreTableTest extends FileStoreTableTestBase {
         // table-path/changelog
         // table-path/changelog/LATEST
         // table-path/changelog/EARLIEST
+    }
+
+    @ParameterizedTest
+    @EnumSource(CoreOptions.MergeEngine.class)
+    public void testForceLookupCompaction(CoreOptions.MergeEngine mergeEngine) throws Exception {
+        Map<MergeEngine, Pair<Long, Long>> testData = new HashMap<>();
+        testData.put(DEDUPLICATE, Pair.of(50L, 100L));
+        testData.put(PARTIAL_UPDATE, Pair.of(null, 100L));
+        testData.put(AGGREGATE, Pair.of(30L, 70L));
+        testData.put(FIRST_ROW, Pair.of(100L, 70L));
+
+        Pair<Long, Long> currentTestData = testData.get(mergeEngine);
+        FileStoreTable table =
+                createFileStoreTable(
+                        options -> {
+                            options.set(CoreOptions.FORCE_LOOKUP, true);
+                            options.set(MERGE_ENGINE, mergeEngine);
+                            if (mergeEngine == AGGREGATE) {
+                                options.set("fields.b.aggregate-function", "sum");
+                            }
+                        });
+        StreamTableWrite write = table.newWrite(commitUser);
+        StreamTableCommit commit = table.newCommit(commitUser);
+        write.withIOManager(IOManager.create(tempDir.toString()));
+
+        // write data
+        write.write(rowData(1, 10, currentTestData.getLeft()));
+        commit.commit(1, write.prepareCommit(true, 1));
+        assertThat(table.snapshotManager().snapshotCount()).isEqualTo(2L);
+
+        write.write(rowData(1, 10, currentTestData.getRight()));
+        commit.commit(0, write.prepareCommit(true, 0));
+        write.close();
+        commit.close();
+        assertThat(table.snapshotManager().snapshotCount()).isEqualTo(4L);
+        assertThat(table.snapshotManager().latestSnapshot())
+                .matches(snapshot -> snapshot.commitKind() == COMPACT);
+
+        // 3 data files + bucket-0 directory
+        List<java.nio.file.Path> files =
+                Files.walk(new File(tablePath.toUri().getPath(), "pt=1/bucket-0").toPath())
+                        .collect(Collectors.toList());
+        assertThat(files.size()).isEqualTo(4);
+
+        // 2 data files compact into 1 file
+        FileStoreScan scan = table.store().newScan().withKind(ScanMode.DELTA);
+        assertThat(scan.plan().files(FileKind.ADD).size()).isEqualTo(1);
+        assertThat(scan.plan().files(FileKind.DELETE).size()).isEqualTo(2);
+
+        // check result
+        List<Split> splits = toSplits(table.newSnapshotReader().read().dataSplits());
+        TableRead read = table.newRead();
+        assertThat(getResult(read, splits, binaryRow(1), 0, BATCH_ROW_TO_STRING))
+                .isEqualTo(
+                        Collections.singletonList(
+                                "1|10|100|binary|varbinary|mapKey:mapVal|multiset"));
     }
 
     private void assertReadChangelog(int id, FileStoreTable table) throws Exception {

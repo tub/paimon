@@ -33,6 +33,7 @@ import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
 
+import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.time.Duration;
 import java.time.LocalDateTime;
@@ -40,13 +41,14 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Set;
 import java.util.SortedMap;
 import java.util.TreeMap;
 import java.util.function.Predicate;
 import java.util.stream.Collectors;
 
 import static org.apache.paimon.utils.BranchManager.DEFAULT_MAIN_BRANCH;
-import static org.apache.paimon.utils.BranchManager.getBranchPath;
+import static org.apache.paimon.utils.BranchManager.branchPath;
 import static org.apache.paimon.utils.FileUtils.listVersionedFileStatus;
 import static org.apache.paimon.utils.Preconditions.checkArgument;
 
@@ -69,7 +71,7 @@ public class TagManager {
     public TagManager(FileIO fileIO, Path tablePath, String branch) {
         this.fileIO = fileIO;
         this.tablePath = tablePath;
-        this.branch = StringUtils.isBlank(branch) ? DEFAULT_MAIN_BRANCH : branch;
+        this.branch = BranchManager.normalizeBranch(branch);
     }
 
     public TagManager copyWithBranch(String branchName) {
@@ -78,12 +80,19 @@ public class TagManager {
 
     /** Return the root Directory of tags. */
     public Path tagDirectory() {
-        return new Path(getBranchPath(fileIO, tablePath, branch) + "/tag");
+        return new Path(branchPath(tablePath, branch) + "/tag");
     }
 
     /** Return the path of a tag. */
     public Path tagPath(String tagName) {
-        return new Path(getBranchPath(fileIO, tablePath, branch) + "/tag/" + TAG_PREFIX + tagName);
+        return new Path(branchPath(tablePath, branch) + "/tag/" + TAG_PREFIX + tagName);
+    }
+
+    public List<Path> tagPaths(Predicate<Path> predicate) throws IOException {
+        return listVersionedFileStatus(fileIO, tagDirectory(), TAG_PREFIX)
+                .map(FileStatus::getPath)
+                .filter(predicate)
+                .collect(Collectors.toList());
     }
 
     /** Create a tag from given snapshot and save it in the storage. */
@@ -92,7 +101,8 @@ public class TagManager {
             String tagName,
             @Nullable Duration timeRetained,
             List<TagCallback> callbacks) {
-        checkArgument(!StringUtils.isBlank(tagName), "Tag name '%s' is blank.", tagName);
+        checkArgument(
+                !StringUtils.isNullOrWhitespaceOnly(tagName), "Tag name '%s' is blank.", tagName);
 
         // When timeRetained is not defined, please do not write the tagCreatorTime field,
         // as this will cause older versions (<= 0.7) of readers to be unable to read this
@@ -114,7 +124,7 @@ public class TagManager {
                 // update tag metadata into for the same snapshot of the same tag name.
                 fileIO.overwriteFileUtf8(tagPath, content);
             } else {
-                fileIO.writeFileUtf8(tagPath, content);
+                fileIO.writeFile(tagPath, content, false);
             }
         } catch (IOException e) {
             throw new RuntimeException(
@@ -158,7 +168,8 @@ public class TagManager {
             TagDeletion tagDeletion,
             SnapshotManager snapshotManager,
             List<TagCallback> callbacks) {
-        checkArgument(!StringUtils.isBlank(tagName), "Tag name '%s' is blank.", tagName);
+        checkArgument(
+                !StringUtils.isNullOrWhitespaceOnly(tagName), "Tag name '%s' is blank.", tagName);
         checkArgument(tagExists(tagName), "Tag '%s' doesn't exist.", tagName);
 
         Snapshot taggedSnapshot = taggedSnapshot(tagName);
@@ -230,12 +241,25 @@ public class TagManager {
         }
         if (success) {
             tagDeletion.cleanUnusedDataFiles(taggedSnapshot, dataFileSkipper);
-            tagDeletion.cleanDataDirectories();
+            tagDeletion.cleanEmptyDirectories();
         }
 
         // delete manifests
-        tagDeletion.cleanUnusedManifests(
-                taggedSnapshot, tagDeletion.manifestSkippingSet(skippedSnapshots));
+        success = true;
+        Set<String> manifestSkippingSet = null;
+        try {
+            manifestSkippingSet = tagDeletion.manifestSkippingSet(skippedSnapshots);
+        } catch (Exception e) {
+            LOG.info(
+                    String.format(
+                            "Skip cleaning manifest files for tag of snapshot %s due to failed to build skipping set.",
+                            taggedSnapshot.id()),
+                    e);
+            success = false;
+        }
+        if (success) {
+            tagDeletion.cleanUnusedManifests(taggedSnapshot, manifestSkippingSet);
+        }
     }
 
     /** Check if a tag exists. */
@@ -290,10 +314,7 @@ public class TagManager {
         TreeMap<Snapshot, List<String>> tags =
                 new TreeMap<>(Comparator.comparingLong(Snapshot::id));
         try {
-            List<Path> paths =
-                    listVersionedFileStatus(fileIO, tagDirectory(), TAG_PREFIX)
-                            .map(FileStatus::getPath)
-                            .collect(Collectors.toList());
+            List<Path> paths = tagPaths(path -> true);
 
             for (Path path : paths) {
                 String tagName = path.getName().substring(TAG_PREFIX.length());
@@ -303,9 +324,10 @@ public class TagManager {
                 }
                 // If the tag file is not found, it might be deleted by
                 // other processes, so just skip this tag
-                Snapshot snapshot = Snapshot.safelyFromPath(fileIO, path);
-                if (snapshot != null) {
+                try {
+                    Snapshot snapshot = Snapshot.fromJson(fileIO.readFileUtf8(path));
                     tags.computeIfAbsent(snapshot, s -> new ArrayList<>()).add(tagName);
+                } catch (FileNotFoundException ignored) {
                 }
             }
         } catch (IOException e) {
@@ -317,10 +339,7 @@ public class TagManager {
     /** Get all {@link Tag}s. */
     public List<Pair<Tag, String>> tagObjects() {
         try {
-            List<Path> paths =
-                    listVersionedFileStatus(fileIO, tagDirectory(), TAG_PREFIX)
-                            .map(FileStatus::getPath)
-                            .collect(Collectors.toList());
+            List<Path> paths = tagPaths(path -> true);
             List<Pair<Tag, String>> tags = new ArrayList<>();
             for (Path path : paths) {
                 String tagName = path.getName().substring(TAG_PREFIX.length());
@@ -367,35 +386,8 @@ public class TagManager {
                         taggedSnapshot.id()));
     }
 
-    public static List<Snapshot> findOverlappedSnapshots(
-            List<Snapshot> taggedSnapshots, long beginInclusive, long endExclusive) {
-        List<Snapshot> snapshots = new ArrayList<>();
-        int right = findPreviousTag(taggedSnapshots, endExclusive);
-        if (right >= 0) {
-            int left = Math.max(findPreviousOrEqualTag(taggedSnapshots, beginInclusive), 0);
-            for (int i = left; i <= right; i++) {
-                snapshots.add(taggedSnapshots.get(i));
-            }
-        }
-        return snapshots;
-    }
-
-    public static int findPreviousTag(List<Snapshot> taggedSnapshots, long targetSnapshotId) {
-        for (int i = taggedSnapshots.size() - 1; i >= 0; i--) {
-            if (taggedSnapshots.get(i).id() < targetSnapshotId) {
-                return i;
-            }
-        }
-        return -1;
-    }
-
-    private static int findPreviousOrEqualTag(
-            List<Snapshot> taggedSnapshots, long targetSnapshotId) {
-        for (int i = taggedSnapshots.size() - 1; i >= 0; i--) {
-            if (taggedSnapshots.get(i).id() <= targetSnapshotId) {
-                return i;
-            }
-        }
-        return -1;
+    /** Read tag for tagName. */
+    public Tag tag(String tagName) {
+        return Tag.fromPath(fileIO, tagPath(tagName));
     }
 }

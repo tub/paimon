@@ -30,6 +30,8 @@ import org.apache.spark.sql.execution.datasources.v2.DataSourceV2ScanRelation
 import org.assertj.core.api.Assertions.assertThatThrownBy
 import org.junit.jupiter.api.Assertions
 
+import java.util.UUID
+
 abstract class AnalyzeTableTestBase extends PaimonSparkTestBase {
 
   test("Paimon analyze: analyze table only") {
@@ -95,19 +97,19 @@ abstract class AnalyzeTableTestBase extends PaimonSparkTestBase {
       s"""
          |CREATE TABLE T (id STRING, name STRING, byte_col BYTE, short_col SHORT, int_col INT, long_col LONG,
          |float_col FLOAT, double_col DOUBLE, decimal_col DECIMAL(10, 5), boolean_col BOOLEAN, date_col DATE,
-         |timestamp_col TIMESTAMP, binary BINARY)
+         |timestamp_col TIMESTAMP, binary BINARY, char_col CHAR(20), varchar_col VARCHAR(20))
          |USING PAIMON
          |TBLPROPERTIES ('primary-key'='id')
          |""".stripMargin)
 
     spark.sql(
-      s"INSERT INTO T VALUES ('1', 'a', 1, 1, 1, 1, 1.0, 1.0, 12.12345, true, cast('2020-01-01' as date), cast('2020-01-01 00:00:00' as timestamp), binary('example binary1'))")
+      s"INSERT INTO T VALUES ('1', 'a', 1, 1, 1, 1, 1.0, 1.0, 12.12345, true, cast('2020-01-01' as date), cast('2020-01-01 00:00:00' as timestamp), binary('example binary1'), 'a', 'a')")
     spark.sql(
-      s"INSERT INTO T VALUES ('2', 'aaa', 1, null, 1, 1, 1.0, 1.0, 12.12345, true, cast('2020-01-02' as date), cast('2020-01-02 00:00:00' as timestamp), binary('example binary1'))")
+      s"INSERT INTO T VALUES ('2', 'aaa', 1, null, 1, 1, 1.0, 1.0, 12.12345, true, cast('2020-01-02' as date), cast('2020-01-02 00:00:00' as timestamp), binary('example binary1'), 'aaa', 'aaa')")
     spark.sql(
-      s"INSERT INTO T VALUES ('3', 'bbbb', 2, 1, 1, 1, 1.0, 1.0, 22.12345, true, cast('2020-01-02' as date), cast('2020-01-02 00:00:00' as timestamp), null)")
+      s"INSERT INTO T VALUES ('3', 'bbbb', 2, 1, 1, 1, 1.0, 1.0, 22.12345, true, cast('2020-01-02' as date), cast('2020-01-02 00:00:00' as timestamp), null, 'bbbb', 'bbbb')")
     spark.sql(
-      s"INSERT INTO T VALUES ('4', 'bbbbbbbb', 2, 2, 2, 2, 2.0, 2.0, 22.12345, false, cast('2020-01-01' as date), cast('2020-01-01 00:00:00' as timestamp), binary('example binary2'))")
+      s"INSERT INTO T VALUES ('4', 'bbbbbbbb', 2, 2, 2, 2, 2.0, 2.0, 22.12345, false, cast('2020-01-01' as date), cast('2020-01-01 00:00:00' as timestamp), binary('example binary2'), 'bbbbbbbb', 'bbbbbbbb')")
 
     spark.sql(s"ANALYZE TABLE T COMPUTE STATISTICS FOR ALL COLUMNS")
 
@@ -163,9 +165,15 @@ abstract class AnalyzeTableTestBase extends PaimonSparkTestBase {
     Assertions.assertEquals(
       ColStats.newColStats(12, 2, null, null, 1, 15, 15),
       colStats.get("binary"))
+    Assertions.assertEquals(
+      ColStats.newColStats(13, 4, null, null, 0, 20, 20),
+      colStats.get("char_col"))
+    Assertions.assertEquals(
+      ColStats.newColStats(14, 4, null, null, 0, 4, 8),
+      colStats.get("varchar_col"))
 
     spark.sql(
-      s"INSERT INTO T VALUES ('5', 'bbbbbbbbbbbbbbbb', 3, 3, 3, 3, 3.0, 3.0, 32.12345, false, cast('2020-01-03' as date), cast('2020-01-03 00:00:00' as timestamp), binary('binary3'))")
+      s"INSERT INTO T VALUES ('5', 'bbbbbbbbbbbbbbbb', 3, 3, 3, 3, 3.0, 3.0, 32.12345, false, cast('2020-01-03' as date), cast('2020-01-03 00:00:00' as timestamp), binary('binary3'), 'bbbbbbbbbbbbbbbb', 'bbbbbbbbbbbbbbbb')")
 
     spark.sql(s"ANALYZE TABLE T COMPUTE STATISTICS FOR ALL COLUMNS")
 
@@ -221,6 +229,12 @@ abstract class AnalyzeTableTestBase extends PaimonSparkTestBase {
     Assertions.assertEquals(
       ColStats.newColStats(12, 3, null, null, 1, 13, 15),
       colStats.get("binary"))
+    Assertions.assertEquals(
+      ColStats.newColStats(13, 5, null, null, 0, 20, 20),
+      colStats.get("char_col"))
+    Assertions.assertEquals(
+      ColStats.newColStats(14, 5, null, null, 0, 7, 16),
+      colStats.get("varchar_col"))
   }
 
   test("Paimon analyze: analyze unsupported cols") {
@@ -300,7 +314,7 @@ abstract class AnalyzeTableTestBase extends PaimonSparkTestBase {
     Assertions.assertEquals(1, statsFileCount(tableLocation, fileIO))
 
     val orphanStats = new Path(tableLocation, "statistics/stats-orphan-0")
-    fileIO.writeFileUtf8(orphanStats, "x")
+    fileIO.tryToWriteAtomic(orphanStats, "x")
     Assertions.assertEquals(2, statsFileCount(tableLocation, fileIO))
 
     // test clean orhan statistic
@@ -372,6 +386,78 @@ abstract class AnalyzeTableTestBase extends PaimonSparkTestBase {
     sql = "SELECT * FROM T WHERE id < 1"
     Assertions.assertEquals(4L, getScanStatistic(sql).rowCount.get.longValue())
     checkAnswer(spark.sql(sql), Nil)
+  }
+
+  test("Paimon analyze: partition filter push down hit with char/varchar") {
+    Seq("char(10)", "varchar(10)").foreach(
+      partitionType => {
+        withTable("T") {
+          sql(s"""
+                 |CREATE TABLE T (id INT, name STRING, pt $partitionType)
+                 |TBLPROPERTIES ('primary-key'='id, pt')
+                 |PARTITIONED BY (pt)
+                 |""".stripMargin)
+
+          sql("INSERT INTO T VALUES (1, 'a', '1'), (2, 'b', '1'), (3, 'c', '2'), (4, 'd', '3')")
+          sql(s"ANALYZE TABLE T COMPUTE STATISTICS FOR ALL COLUMNS")
+
+          // For col type such as char, varchar that don't have min and max, filter estimation on stats has no effect.
+          var sqlText = "SELECT * FROM T WHERE pt < '1'"
+          Assertions.assertEquals(4L, getScanStatistic(sqlText).rowCount.get.longValue())
+
+          sqlText = "SELECT id FROM T WHERE pt < '1'"
+          Assertions.assertEquals(4L, getScanStatistic(sqlText).rowCount.get.longValue())
+        }
+      })
+  }
+
+  test("Fix reported statistics does not do column pruning") {
+    spark.sql("""
+                |CREATE TABLE T (c1 INT, c2 INT, c3 LONG, c4 STRING)
+                |USING PAIMON
+                |TBLPROPERTIES ('primary-key'='c1')
+                |""".stripMargin)
+    spark.sql("ANALYZE TABLE T COMPUTE STATISTICS")
+
+    val wholeSize1 = getScanStatistic("SELECT * FROM T")
+    assert(wholeSize1.rowCount.get.toLong == 0)
+    assert(wholeSize1.sizeInBytes.toLong == 0)
+    val metadataSize1 = getScanStatistic("SELECT __paimon_row_index FROM T")
+    assert(metadataSize1.rowCount.get.toLong == 0)
+    assert(metadataSize1.sizeInBytes.toLong == 0)
+
+    spark.sql(s"INSERT INTO T VALUES (1, 1, 100, '${UUID.randomUUID().toString()}')")
+    spark.sql(s"INSERT INTO T VALUES (2, 2, 200, '${UUID.randomUUID().toString()}')")
+    spark.sql(s"INSERT INTO T VALUES (3, 3, 300, '${UUID.randomUUID().toString()}')")
+
+    def checkStatistics(): Long = {
+      val wholeSize2 = getScanStatistic("SELECT * FROM T")
+      assert(wholeSize2.rowCount.get.toLong == 3)
+      assert(wholeSize2.sizeInBytes.toLong > 0)
+      val wholeSizeWithMetadata = getScanStatistic("SELECT *, __paimon_file_path FROM T")
+      assert(wholeSizeWithMetadata.rowCount.get.toLong == 3)
+      assert(wholeSizeWithMetadata.sizeInBytes.toLong == wholeSize2.sizeInBytes.toLong + 20 * 3)
+
+      val oneColSize = getScanStatistic("SELECT c3 FROM T")
+      val threeColSize = getScanStatistic("SELECT c1, c2, c3 FROM T")
+      val longMetadataSize = getScanStatistic("SELECT __paimon_row_index FROM T")
+      assert(oneColSize.rowCount.get.toLong == 3)
+      assert(threeColSize.rowCount.get.toLong == 3)
+      assert(longMetadataSize.rowCount.get.toLong == 3)
+      assert(longMetadataSize.sizeInBytes == 8 * 3)
+      assert(oneColSize.sizeInBytes > 0 && oneColSize.sizeInBytes < wholeSize2.sizeInBytes)
+      assert(threeColSize.sizeInBytes < wholeSize2.sizeInBytes)
+      assert(threeColSize.sizeInBytes > oneColSize.sizeInBytes)
+      wholeSize2.sizeInBytes.toLong
+    }
+
+    spark.sql("ANALYZE TABLE T COMPUTE STATISTICS")
+    val noColStat = checkStatistics()
+
+    spark.sql("ANALYZE TABLE T COMPUTE STATISTICS FOR ALL COLUMNS")
+    val withColStat = checkStatistics()
+
+    assert(withColStat == noColStat)
   }
 
   protected def statsFileCount(tableLocation: Path, fileIO: FileIO): Int = {

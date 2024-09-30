@@ -58,33 +58,6 @@ public class ContinuousFileStoreITCase extends CatalogITCaseBase {
     }
 
     @Test
-    public void testSourceReuseWithoutScanPushDown() {
-        sEnv.executeSql("CREATE TEMPORARY TABLE print1 (a STRING) WITH ('connector'='print')");
-        sEnv.executeSql("CREATE TEMPORARY TABLE print2 (b STRING) WITH ('connector'='print')");
-
-        StatementSet statementSet = sEnv.createStatementSet();
-        statementSet.addInsertSql(
-                "INSERT INTO print1 SELECT a FROM T1 /*+ OPTIONS('scan.push-down' = 'false') */");
-        statementSet.addInsertSql(
-                "INSERT INTO print2 SELECT b FROM T1 /*+ OPTIONS('scan.push-down' = 'false') */");
-        assertThat(statementSet.compilePlan().explain()).contains("Reused");
-
-        statementSet = sEnv.createStatementSet();
-        statementSet.addInsertSql(
-                "INSERT INTO print1 SELECT a FROM T1 /*+ OPTIONS('scan.push-down' = 'false') */ WHERE b = 'Apache'");
-        statementSet.addInsertSql(
-                "INSERT INTO print2 SELECT b FROM T1 /*+ OPTIONS('scan.push-down' = 'false') */ WHERE a = 'Paimon'");
-        assertThat(statementSet.compilePlan().explain()).contains("Reused");
-
-        statementSet = sEnv.createStatementSet();
-        statementSet.addInsertSql(
-                "INSERT INTO print1 SELECT a FROM T1 /*+ OPTIONS('scan.push-down' = 'false') */ WHERE b = 'Apache' LIMIT 5");
-        statementSet.addInsertSql(
-                "INSERT INTO print2 SELECT b FROM T1 /*+ OPTIONS('scan.push-down' = 'false') */ WHERE a = 'Paimon' LIMIT 10");
-        assertThat(statementSet.compilePlan().explain()).contains("Reused");
-    }
-
-    @Test
     public void testSourceReuseWithScanPushDown() {
         // source can be reused with projection applied
         sEnv.executeSql("CREATE TEMPORARY TABLE print1 (a STRING) WITH ('connector'='print')");
@@ -138,7 +111,8 @@ public class ContinuousFileStoreITCase extends CatalogITCaseBase {
         BlockingIterator<Row, Row> iterator =
                 BlockingIterator.of(
                         streamSqlIter(
-                                "SELECT * FROM %s /*+ OPTIONS('consumer-id'='me') */", table));
+                                "SELECT * FROM %s /*+ OPTIONS('consumer-id'='me','consumer.expiration-time'='3h') */",
+                                table));
 
         batchSql("INSERT INTO %s VALUES ('1', '2', '3'), ('4', '5', '6')", table);
         assertThat(iterator.collect(2))
@@ -150,7 +124,8 @@ public class ContinuousFileStoreITCase extends CatalogITCaseBase {
         iterator =
                 BlockingIterator.of(
                         streamSqlIter(
-                                "SELECT * FROM %s /*+ OPTIONS('consumer-id'='me') */", table));
+                                "SELECT * FROM %s /*+ OPTIONS('consumer-id'='me','consumer.expiration-time'='3h') */",
+                                table));
         batchSql("INSERT INTO %s VALUES ('7', '8', '9')", table);
         assertThat(iterator.collect(1)).containsExactlyInAnyOrder(Row.of("7", "8", "9"));
         iterator.close();
@@ -164,7 +139,8 @@ public class ContinuousFileStoreITCase extends CatalogITCaseBase {
         BlockingIterator<Row, Row> iterator =
                 BlockingIterator.of(
                         streamSqlIter(
-                                "SELECT * FROM %s /*+ OPTIONS('consumer-id'='me') */", table));
+                                "SELECT * FROM %s /*+ OPTIONS('consumer-id'='me','consumer.expiration-time'='3h') */",
+                                table));
 
         assertThat(iterator.collect(2))
                 .containsExactlyInAnyOrder(Row.of("1", "2", "3"), Row.of("4", "5", "6"));
@@ -174,7 +150,10 @@ public class ContinuousFileStoreITCase extends CatalogITCaseBase {
 
         batchSql("INSERT INTO %s VALUES ('7', '8', '9')", table);
         // ignore the consumer id in batch mode
-        assertThat(sql("SELECT * FROM %s /*+ OPTIONS('consumer-id'='me') */", table))
+        assertThat(
+                        sql(
+                                "SELECT * FROM %s /*+ OPTIONS('consumer-id'='me','consumer.expiration-time'='3h') */",
+                                table))
                 .containsExactlyInAnyOrder(
                         Row.of("1", "2", "3"), Row.of("4", "5", "6"), Row.of("7", "8", "9"));
     }
@@ -188,7 +167,8 @@ public class ContinuousFileStoreITCase extends CatalogITCaseBase {
         CloseableIterator<Row> insert1 = streamSqlIter("INSERT INTO T2 SELECT a, b, c FROM gen");
         sql("CREATE TABLE WT (a STRING, b STRING, c STRING, PRIMARY KEY (a) NOT ENFORCED)");
         CloseableIterator<Row> insert2 =
-                streamSqlIter("INSERT INTO WT SELECT * FROM T2 /*+ OPTIONS('consumer-id'='me') */");
+                streamSqlIter(
+                        "INSERT INTO WT SELECT * FROM T2 /*+ OPTIONS('consumer-id'='me','consumer.expiration-time'='3h') */");
         while (true) {
             Set<Long> watermarks =
                     sql("SELECT `watermark` FROM WT$snapshots").stream()
@@ -559,7 +539,7 @@ public class ContinuousFileStoreITCase extends CatalogITCaseBase {
 
         BlockingIterator<Row, Row> iterator =
                 streamSqlBlockIter(
-                        "SELECT * FROM ignore_delete /*+ OPTIONS('continuous.discovery-interval' = '1s') */");
+                        "SELECT * FROM ignore_delete /*+ OPTIONS('continuous.discovery-interval' = '1s', 'scan.snapshot-id' = '1') */");
 
         sql("INSERT INTO ignore_delete VALUES (1, 'A'), (2, 'B')");
         sql("DELETE FROM ignore_delete WHERE pk = 1");

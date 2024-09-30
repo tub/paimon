@@ -21,6 +21,7 @@ package org.apache.paimon.flink.sink;
 import org.apache.paimon.data.InternalRow;
 import org.apache.paimon.table.FileStoreTable;
 
+import org.apache.flink.runtime.state.StateInitializationContext;
 import org.apache.flink.streaming.api.operators.OneInputStreamOperator;
 
 import java.util.Map;
@@ -32,14 +33,31 @@ public class RowUnawareBucketSink extends UnawareBucketSink<InternalRow> {
             FileStoreTable table,
             Map<String, String> overwritePartitions,
             LogSinkFunction logSinkFunction,
-            Integer parallelism,
-            boolean boundedInput) {
-        super(table, overwritePartitions, logSinkFunction, parallelism, boundedInput);
+            Integer parallelism) {
+        super(table, overwritePartitions, logSinkFunction, parallelism);
     }
 
     @Override
     protected OneInputStreamOperator<InternalRow, Committable> createWriteOperator(
             StoreSinkWrite.Provider writeProvider, String commitUser) {
-        return new RowDataStoreWriteOperator(table, logSinkFunction, writeProvider, commitUser);
+        return new RowDataStoreWriteOperator(table, logSinkFunction, writeProvider, commitUser) {
+
+            @Override
+            protected StoreSinkWriteState createState(
+                    StateInitializationContext context,
+                    StoreSinkWriteState.StateValueFilter stateFilter)
+                    throws Exception {
+                // No conflicts will occur in append only unaware bucket writer, so no state is
+                // needed.
+                return new NoopStoreSinkWriteState(stateFilter);
+            }
+
+            @Override
+            protected String getCommitUser(StateInitializationContext context) throws Exception {
+                // No conflicts will occur in append only unaware bucket writer, so commitUser does
+                // not matter.
+                return commitUser;
+            }
+        };
     }
 }

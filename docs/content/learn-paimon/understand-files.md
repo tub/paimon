@@ -40,7 +40,7 @@ Before delving further into this page, please ensure that you have read through 
 following sections:
 
 1. [Basic Concepts]({{< ref "concepts/basic-concepts" >}}),
-2. [Primary Key Table]({{< ref "primary-key-table/overview" >}}) and
+2. [Primary Key Table]({{< ref "primary-key-table/overview" >}}) and [Append Table]({{< ref "append-table/overview" >}})
 3. How to use Paimon in [Flink]({{< ref "flink" >}}).
 
 ## Understand File Operations
@@ -245,6 +245,22 @@ is needed in order to reduce the number of small files.
 Let's trigger the full-compaction now, and run a dedicated compaction job through `flink run`:
 
 {{< label Batch >}}
+
+{{< tabs "compact" >}}
+
+{{< tab "Flink SQL" >}}
+```sql  
+CALL sys.compact(
+   `table` => 'database_name.table_name', 
+   partitions => 'partition_name', 
+   order_strategy => 'order_strategy',
+   order_by => 'order_by',
+   options => 'paimon_table_dynamic_conf'
+);
+```
+{{< /tab >}}
+
+{{< tab "Flink Action" >}}
 ```bash  
 <FLINK_HOME>/bin/flink run \
     -D execution.runtime-mode=batch \
@@ -257,8 +273,22 @@ Let's trigger the full-compaction now, and run a dedicated compaction job throug
     [--catalog_conf <paimon-catalog-conf> [--catalog_conf <paimon-catalog-conf> ...]] \
     [--table_conf <paimon-table-dynamic-conf> [--table_conf <paimon-table-dynamic-conf>] ...]
 ```
+{{< /tab >}}
+
+{{< /tabs >}}
 
 an example would be (suppose you're already in Flink home)
+
+{{< tabs "compact example" >}}
+
+{{< tab "Flink SQL" >}}
+
+```sql
+CALL sys.compact('T');
+```
+{{< /tab >}}
+
+{{< tab "Flink Action" >}}
 
 ```bash
 ./bin/flink run \
@@ -266,6 +296,9 @@ an example would be (suppose you're already in Flink home)
     compact \
     --path file:///tmp/paimon/default.db/T
 ```
+{{< /tab >}}
+
+{{< /tabs >}}
 
 All current table files will be compacted and a new snapshot, namely `snapshot-4`, is
 made and contains the following information:
@@ -455,7 +488,7 @@ this means that there are at least 5 files in a bucket. If you want to reduce th
 By default, Append also does automatic compaction to reduce the number of small files.
 
 However, for Bucketed Append table, it will only compact the files within the Bucket for sequential
-purposes, which may keep more small files. See [Bucketed Append]({{< ref "append-table/bucketed-append" >}}).
+purposes, which may keep more small files. See [Bucketed Append]({{< ref "append-table/streaming#bucketed-append" >}}).
 
 ### Understand Full-Compaction
 
