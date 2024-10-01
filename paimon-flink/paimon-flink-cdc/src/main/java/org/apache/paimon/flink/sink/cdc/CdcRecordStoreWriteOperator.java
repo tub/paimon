@@ -28,6 +28,8 @@ import org.apache.paimon.table.FileStoreTable;
 
 import org.apache.flink.runtime.state.StateInitializationContext;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.time.Duration;
@@ -41,6 +43,8 @@ import static org.apache.paimon.flink.sink.cdc.CdcRecordUtils.toGenericRow;
  */
 public class CdcRecordStoreWriteOperator extends TableWriteOperator<CdcRecord> {
 
+    private static final Logger LOG = LoggerFactory.getLogger(CdcRecordStoreWriteOperator.class);
+
     private static final long serialVersionUID = 1L;
 
     public static final ConfigOption<Duration> RETRY_SLEEP_TIME =
@@ -50,6 +54,14 @@ public class CdcRecordStoreWriteOperator extends TableWriteOperator<CdcRecord> {
 
     private final long retrySleepMillis;
 
+    public static final ConfigOption<Integer> MAX_PROCESS_ELEMENT_RETRY_COUNT =
+            ConfigOptions.key("cdc.max-process-element-retry-count")
+                    .intType()
+                    .defaultValue(10)
+                    .withDescription("The retry count for record processing.");
+
+    private final long maxProcessElementRetryCount;
+
     public CdcRecordStoreWriteOperator(
             FileStoreTable table,
             StoreSinkWrite.Provider storeSinkWriteProvider,
@@ -57,6 +69,8 @@ public class CdcRecordStoreWriteOperator extends TableWriteOperator<CdcRecord> {
         super(table, storeSinkWriteProvider, initialCommitUser);
         this.retrySleepMillis =
                 table.coreOptions().toConfiguration().get(RETRY_SLEEP_TIME).toMillis();
+        this.maxProcessElementRetryCount =
+                table.coreOptions().toConfiguration().get(MAX_PROCESS_ELEMENT_RETRY_COUNT);
     }
 
     @Override
@@ -75,7 +89,9 @@ public class CdcRecordStoreWriteOperator extends TableWriteOperator<CdcRecord> {
         CdcRecord record = element.getValue();
         Optional<GenericRow> optionalConverted = toGenericRow(record, table.schema().fields());
         if (!optionalConverted.isPresent()) {
-            while (true) {
+            int count = 0;
+            while (count <= maxProcessElementRetryCount) {
+                count += 1;
                 table = table.copyWithLatestSchema();
                 optionalConverted = toGenericRow(record, table.schema().fields());
                 if (optionalConverted.isPresent()) {
@@ -87,7 +103,11 @@ public class CdcRecordStoreWriteOperator extends TableWriteOperator<CdcRecord> {
         }
 
         try {
-            write.write(optionalConverted.get());
+            if (optionalConverted.isPresent()) {
+                write.write(optionalConverted.get());
+            } else {
+                LOG.warn("Skipping corrupt or unparsable message record " + record);
+            }
         } catch (Exception e) {
             throw new IOException(e);
         }
