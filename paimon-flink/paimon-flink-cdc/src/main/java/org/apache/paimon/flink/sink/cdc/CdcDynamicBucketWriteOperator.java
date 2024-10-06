@@ -31,6 +31,7 @@ import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
 import java.io.IOException;
 import java.util.Optional;
 
+import static org.apache.paimon.flink.sink.cdc.CdcRecordStoreWriteOperator.MAX_PROCESS_ELEMENT_RETRY_COUNT;
 import static org.apache.paimon.flink.sink.cdc.CdcRecordStoreWriteOperator.RETRY_SLEEP_TIME;
 import static org.apache.paimon.flink.sink.cdc.CdcRecordUtils.toGenericRow;
 
@@ -43,6 +44,8 @@ public class CdcDynamicBucketWriteOperator extends TableWriteOperator<Tuple2<Cdc
 
     private final long retrySleepMillis;
 
+    private final long maxProcessElementRetryCount;
+
     public CdcDynamicBucketWriteOperator(
             FileStoreTable table,
             StoreSinkWrite.Provider storeSinkWriteProvider,
@@ -50,6 +53,8 @@ public class CdcDynamicBucketWriteOperator extends TableWriteOperator<Tuple2<Cdc
         super(table, storeSinkWriteProvider, initialCommitUser);
         this.retrySleepMillis =
                 table.coreOptions().toConfiguration().get(RETRY_SLEEP_TIME).toMillis();
+        this.maxProcessElementRetryCount =
+                table.coreOptions().toConfiguration().get(MAX_PROCESS_ELEMENT_RETRY_COUNT);
     }
 
     @Override
@@ -68,7 +73,7 @@ public class CdcDynamicBucketWriteOperator extends TableWriteOperator<Tuple2<Cdc
         Tuple2<CdcRecord, Integer> record = element.getValue();
         Optional<GenericRow> optionalConverted = toGenericRow(record.f0, table.schema().fields());
         if (!optionalConverted.isPresent()) {
-            while (true) {
+            for (int count = 0; count <= maxProcessElementRetryCount; count++) {
                 table = table.copyWithLatestSchema();
                 optionalConverted = toGenericRow(record.f0, table.schema().fields());
                 if (optionalConverted.isPresent()) {
@@ -80,7 +85,11 @@ public class CdcDynamicBucketWriteOperator extends TableWriteOperator<Tuple2<Cdc
         }
 
         try {
-            write.write(optionalConverted.get(), record.f1);
+            if (optionalConverted.isPresent()) {
+                write.write(optionalConverted.get(), record.f1);
+            } else {
+                LOG.warn("CdcDynamicBucketWriteOperator is skipping corrupt or unparsable record={}", record);
+            }
         } catch (Exception e) {
             throw new IOException(e);
         }
