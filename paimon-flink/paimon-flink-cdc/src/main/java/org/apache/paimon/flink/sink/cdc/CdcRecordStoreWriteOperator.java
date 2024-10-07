@@ -89,9 +89,7 @@ public class CdcRecordStoreWriteOperator extends TableWriteOperator<CdcRecord> {
         CdcRecord record = element.getValue();
         Optional<GenericRow> optionalConverted = toGenericRow(record, table.schema().fields());
         if (!optionalConverted.isPresent()) {
-            int count = 0;
-            while (count <= maxProcessElementRetryCount) {
-                count += 1;
+            for (int count = 0; count <= maxProcessElementRetryCount; count++) {
                 table = table.copyWithLatestSchema();
                 optionalConverted = toGenericRow(record, table.schema().fields());
                 if (optionalConverted.isPresent()) {
@@ -106,7 +104,9 @@ public class CdcRecordStoreWriteOperator extends TableWriteOperator<CdcRecord> {
             if (optionalConverted.isPresent()) {
                 write.write(optionalConverted.get());
             } else {
-                LOG.warn("Skipping corrupt or unparsable message record " + record);
+                LOG.warn(
+                        "CdcRecordStoreWriteOperator is skipping corrupt or unparsable record={}",
+                        record);
             }
         } catch (Exception e) {
             throw new IOException(e);

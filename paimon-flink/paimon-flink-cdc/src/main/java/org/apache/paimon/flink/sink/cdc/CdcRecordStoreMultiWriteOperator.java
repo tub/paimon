@@ -50,6 +50,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.stream.Collectors;
 
+import static org.apache.paimon.flink.sink.cdc.CdcRecordStoreWriteOperator.MAX_PROCESS_ELEMENT_RETRY_COUNT;
 import static org.apache.paimon.flink.sink.cdc.CdcRecordStoreWriteOperator.RETRY_SLEEP_TIME;
 import static org.apache.paimon.flink.sink.cdc.CdcRecordUtils.toGenericRow;
 
@@ -149,7 +150,12 @@ public class CdcRecordStoreMultiWriteOperator
                 toGenericRow(record.record(), table.schema().fields());
         if (!optionalConverted.isPresent()) {
             FileStoreTable latestTable = table;
-            while (true) {
+            int maxProcessElementRetryCount =
+                    latestTable
+                            .coreOptions()
+                            .toConfiguration()
+                            .get(MAX_PROCESS_ELEMENT_RETRY_COUNT);
+            for (int count = 0; count <= maxProcessElementRetryCount; count++) {
                 latestTable = latestTable.copyWithLatestSchema();
                 tables.put(tableId, latestTable);
                 optionalConverted = toGenericRow(record.record(), latestTable.schema().fields());
@@ -167,7 +173,13 @@ public class CdcRecordStoreMultiWriteOperator
         }
 
         try {
-            write.write(optionalConverted.get());
+            if (optionalConverted.isPresent()) {
+                write.write(optionalConverted.get());
+            } else {
+                LOG.warn(
+                        "CdcRecordStoreMultiWriteOperator is skipping corrupt or unparsable record={}",
+                        record);
+            }
         } catch (Exception e) {
             throw new IOException(e);
         }
