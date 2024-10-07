@@ -150,10 +150,11 @@ public class CdcRecordStoreMultiWriteOperator
                 toGenericRow(record.record(), table.schema().fields());
         if (!optionalConverted.isPresent()) {
             FileStoreTable latestTable = table;
-            int maxProcessElementRetryCount = latestTable
-                    .coreOptions()
-                    .toConfiguration()
-                    .get(MAX_PROCESS_ELEMENT_RETRY_COUNT);
+            int maxProcessElementRetryCount =
+                    latestTable
+                            .coreOptions()
+                            .toConfiguration()
+                            .get(MAX_PROCESS_ELEMENT_RETRY_COUNT);
             for (int count = 0; count <= maxProcessElementRetryCount; count++) {
                 latestTable = latestTable.copyWithLatestSchema();
                 tables.put(tableId, latestTable);
@@ -175,7 +176,9 @@ public class CdcRecordStoreMultiWriteOperator
             if (optionalConverted.isPresent()) {
                 write.write(optionalConverted.get());
             } else {
-                LOG.warn("CdcRecordStoreMultiWriteOperator is skipping corrupt or unparsable record={}", record);
+                LOG.warn(
+                        "CdcRecordStoreMultiWriteOperator is skipping corrupt or unparsable record={}",
+                        record);
             }
         } catch (Exception e) {
             throw new IOException(e);

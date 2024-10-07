@@ -104,7 +104,9 @@ public class CdcRecordStoreWriteOperator extends TableWriteOperator<CdcRecord> {
             if (optionalConverted.isPresent()) {
                 write.write(optionalConverted.get());
             } else {
-                LOG.warn("CdcRecordStoreWriteOperator is skipping corrupt or unparsable record={}", record);
+                LOG.warn(
+                        "CdcRecordStoreWriteOperator is skipping corrupt or unparsable record={}",
+                        record);
             }
         } catch (Exception e) {
             throw new IOException(e);

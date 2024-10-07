@@ -88,7 +88,9 @@ public class CdcDynamicBucketWriteOperator extends TableWriteOperator<Tuple2<Cdc
             if (optionalConverted.isPresent()) {
                 write.write(optionalConverted.get(), record.f1);
             } else {
-                LOG.warn("CdcDynamicBucketWriteOperator is skipping corrupt or unparsable record={}", record);
+                LOG.warn(
+                        "CdcDynamicBucketWriteOperator is skipping corrupt or unparsable record={}",
+                        record);
             }
         } catch (Exception e) {
             throw new IOException(e);
