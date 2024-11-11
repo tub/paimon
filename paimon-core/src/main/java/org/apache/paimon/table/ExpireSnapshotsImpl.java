@@ -35,9 +35,14 @@ import org.slf4j.LoggerFactory;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.function.Predicate;
+
+import static org.apache.paimon.utils.SnapshotManager.findPreviousOrEqualSnapshot;
+import static org.apache.paimon.utils.SnapshotManager.findPreviousSnapshot;
 
 /** An implementation for {@link ExpireSnapshots}. */
 public class ExpireSnapshotsImpl implements ExpireSnapshots {
@@ -211,10 +216,26 @@ public class ExpireSnapshotsImpl implements ExpireSnapshots {
 
         // delete manifests and indexFiles
         List<Snapshot> skippingSnapshots =
-                SnapshotManager.findOverlappedSnapshots(
-                        taggedSnapshots, beginInclusiveId, endExclusiveId);
-        skippingSnapshots.add(snapshotManager.snapshot(endExclusiveId));
-        Set<String> skippingSet = snapshotDeletion.manifestSkippingSet(skippingSnapshots);
+                findSkippingTags(taggedSnapshots, beginInclusiveId, endExclusiveId);
+
+        try {
+            skippingSnapshots.add(snapshotManager.tryGetSnapshot(endExclusiveId));
+        } catch (FileNotFoundException e) {
+            // the end exclusive snapshot is gone
+            // there is no need to proceed
+            return 0;
+        }
+
+        Set<String> skippingSet = new HashSet<>();
+        try {
+            skippingSet.addAll(snapshotDeletion.manifestSkippingSet(skippingSnapshots));
+        } catch (Exception e) {
+            // maybe snapshot been deleted by other jobs.
+            if (e.getCause() == null || !(e.getCause() instanceof FileNotFoundException)) {
+                throw e;
+            }
+        }
+
         for (long id = beginInclusiveId; id < endExclusiveId; id++) {
             if (LOG.isDebugEnabled()) {
                 LOG.debug("Ready to delete manifests in snapshot #" + id);
@@ -258,5 +279,19 @@ public class ExpireSnapshotsImpl implements ExpireSnapshots {
     @VisibleForTesting
     public SnapshotDeletion snapshotDeletion() {
         return snapshotDeletion;
+    }
+
+    /** Find the skipping tags in sortedTags for range of [beginInclusive, endExclusive). */
+    public static List<Snapshot> findSkippingTags(
+            List<Snapshot> sortedTags, long beginInclusive, long endExclusive) {
+        List<Snapshot> overlappedSnapshots = new ArrayList<>();
+        int right = findPreviousSnapshot(sortedTags, endExclusive);
+        if (right >= 0) {
+            int left = Math.max(findPreviousOrEqualSnapshot(sortedTags, beginInclusive), 0);
+            for (int i = left; i <= right; i++) {
+                overlappedSnapshots.add(sortedTags.get(i));
+            }
+        }
+        return overlappedSnapshots;
     }
 }

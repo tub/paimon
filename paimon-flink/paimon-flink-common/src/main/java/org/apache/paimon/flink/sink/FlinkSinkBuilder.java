@@ -51,7 +51,6 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 
-import static org.apache.flink.configuration.CoreOptions.DEFAULT_PARALLELISM;
 import static org.apache.paimon.flink.FlinkConnectorOptions.CLUSTERING_SAMPLE_FACTOR;
 import static org.apache.paimon.flink.FlinkConnectorOptions.CLUSTERING_STRATEGY;
 import static org.apache.paimon.flink.FlinkConnectorOptions.MIN_CLUSTERING_SAMPLE_FACTOR;
@@ -104,9 +103,12 @@ public class FlinkSinkBuilder {
         DataFormatConverters.RowConverter converter =
                 new DataFormatConverters.RowConverter(fieldDataTypes);
         this.input =
-                input.map((MapFunction<Row, RowData>) converter::toInternal)
-                        .setParallelism(input.getParallelism())
-                        .returns(InternalTypeInfo.of(rowType));
+                input.transform(
+                                "Map",
+                                InternalTypeInfo.of(rowType),
+                                new StreamMapWithForwardingRecordAttributes<>(
+                                        (MapFunction<Row, RowData>) converter::toInternal))
+                        .setParallelism(input.getParallelism());
         return this;
     }
 
@@ -241,9 +243,12 @@ public class FlinkSinkBuilder {
 
     protected DataStream<InternalRow> mapToInternalRow(
             DataStream<RowData> input, org.apache.paimon.types.RowType rowType) {
-        return input.map((MapFunction<RowData, InternalRow>) FlinkRowWrapper::new)
-                .setParallelism(input.getParallelism())
-                .returns(org.apache.paimon.flink.utils.InternalTypeInfo.fromRowType(rowType));
+        return input.transform(
+                        "Map",
+                        org.apache.paimon.flink.utils.InternalTypeInfo.fromRowType(rowType),
+                        new StreamMapWithForwardingRecordAttributes<>(
+                                (MapFunction<RowData, InternalRow>) FlinkRowWrapper::new))
+                .setParallelism(input.getParallelism());
     }
 
     protected DataStreamSink<?> buildDynamicBucketSink(
@@ -312,11 +317,11 @@ public class FlinkSinkBuilder {
                     parallelismSource = "input parallelism";
                     parallelism = input.getParallelism();
                 } else {
-                    parallelismSource = DEFAULT_PARALLELISM.key();
+                    parallelismSource = "AdaptiveBatchScheduler's default max parallelism";
                     parallelism =
-                            input.getExecutionEnvironment()
-                                    .getConfiguration()
-                                    .get(DEFAULT_PARALLELISM);
+                            AdaptiveParallelism.getDefaultMaxParallelism(
+                                    input.getExecutionEnvironment().getConfiguration(),
+                                    input.getExecutionConfig());
                 }
                 String msg =
                         String.format(

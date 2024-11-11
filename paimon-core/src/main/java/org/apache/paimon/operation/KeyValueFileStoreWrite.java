@@ -136,6 +136,7 @@ public class KeyValueFileStoreWrite extends MemoryFileStoreWrite<KeyValue> {
                 snapshotManager,
                 scan,
                 options,
+                partitionType,
                 indexFactory,
                 deletionVectorsMaintainerFactory,
                 tableName);
@@ -310,7 +311,7 @@ public class KeyValueFileStoreWrite extends MemoryFileStoreWrite<KeyValue> {
                 lookupReaderFactory =
                         readerFactoryBuilder
                                 .copyWithoutProjection()
-                                .withValueProjection(new int[0][])
+                                .withReadValueType(RowType.of())
                                 .build(partition, bucket, dvFactory);
                 processor = new ContainsValueProcessor();
                 wrapperFactory = new FirstRowMergeFunctionWrapperFactory();

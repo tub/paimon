@@ -26,11 +26,11 @@ import org.apache.paimon.options.Options;
 import org.apache.paimon.predicate.Predicate;
 import org.apache.paimon.reader.ReaderSupplier;
 import org.apache.paimon.reader.RecordReader;
-import org.apache.paimon.table.Table;
 import org.apache.paimon.table.source.ReadBuilder;
 import org.apache.paimon.table.source.Split;
 import org.apache.paimon.table.source.StreamTableScan;
 import org.apache.paimon.types.RowType;
+import org.apache.paimon.utils.Filter;
 import org.apache.paimon.utils.FunctionWithIOException;
 import org.apache.paimon.utils.TypeUtils;
 
@@ -50,19 +50,22 @@ import static org.apache.paimon.predicate.PredicateBuilder.transformFieldMapping
 /** A streaming reader to load data into {@link LookupTable}. */
 public class LookupStreamingReader {
 
-    private final Table table;
+    private final LookupFileStoreTable table;
     private final int[] projection;
+    @Nullable private final Filter<InternalRow> cacheRowFilter;
     private final ReadBuilder readBuilder;
     @Nullable private final Predicate projectedPredicate;
     private final StreamTableScan scan;
 
     public LookupStreamingReader(
-            Table table,
+            LookupFileStoreTable table,
             int[] projection,
             @Nullable Predicate predicate,
-            Set<Integer> requireCachedBucketIds) {
+            Set<Integer> requireCachedBucketIds,
+            @Nullable Filter<InternalRow> cacheRowFilter) {
         this.table = table;
         this.projection = projection;
+        this.cacheRowFilter = cacheRowFilter;
         this.readBuilder =
                 this.table
                         .newReadBuilder()
@@ -125,6 +128,10 @@ public class LookupStreamingReader {
 
         if (projectedPredicate != null) {
             reader = reader.filter(projectedPredicate::test);
+        }
+
+        if (cacheRowFilter != null) {
+            reader = reader.filter(cacheRowFilter);
         }
         return reader;
     }

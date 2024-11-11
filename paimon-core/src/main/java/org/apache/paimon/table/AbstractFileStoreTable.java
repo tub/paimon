@@ -58,6 +58,7 @@ import org.apache.paimon.table.source.snapshot.SnapshotReader;
 import org.apache.paimon.table.source.snapshot.SnapshotReaderImpl;
 import org.apache.paimon.table.source.snapshot.StaticFromTimestampStartingScanner;
 import org.apache.paimon.table.source.snapshot.StaticFromWatermarkStartingScanner;
+import org.apache.paimon.table.source.snapshot.TimeTravelUtil;
 import org.apache.paimon.tag.TagPreview;
 import org.apache.paimon.utils.BranchManager;
 import org.apache.paimon.utils.Preconditions;
@@ -168,10 +169,9 @@ abstract class AbstractFileStoreTable implements FileStoreTable {
 
     @Override
     public Optional<Statistics> statistics() {
-        // todo: support time travel
-        Snapshot latestSnapshot = snapshotManager().latestSnapshot();
-        if (latestSnapshot != null) {
-            return store().newStatsFileHandler().readStats(latestSnapshot);
+        Snapshot snapshot = TimeTravelUtil.resolveSnapshot(this);
+        if (snapshot != null) {
+            return store().newStatsFileHandler().readStats(snapshot);
         }
         return Optional.empty();
     }
@@ -569,6 +569,24 @@ abstract class AbstractFileStoreTable implements FileStoreTable {
 
     private void createTag(String tagName, Snapshot fromSnapshot, @Nullable Duration timeRetained) {
         tagManager().createTag(fromSnapshot, tagName, timeRetained, store().createTagCallbacks());
+    }
+
+    @Override
+    public void renameTag(String tagName, String targetTagName) {
+        tagManager().renameTag(tagName, targetTagName);
+    }
+
+    @Override
+    public void replaceTag(
+            String tagName, @Nullable Long fromSnapshotId, @Nullable Duration timeRetained) {
+        if (fromSnapshotId == null) {
+            Snapshot latestSnapshot = snapshotManager().latestSnapshot();
+            SnapshotNotExistException.checkNotNull(
+                    latestSnapshot, "Cannot replace tag because latest snapshot doesn't exist.");
+            tagManager().replaceTag(latestSnapshot, tagName, timeRetained);
+        } else {
+            tagManager().replaceTag(findSnapshot(fromSnapshotId), tagName, timeRetained);
+        }
     }
 
     @Override

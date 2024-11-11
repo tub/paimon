@@ -28,6 +28,7 @@ import org.apache.paimon.memory.MemoryPoolFactory;
 import org.apache.paimon.metrics.MetricRegistry;
 import org.apache.paimon.operation.metrics.WriterBufferMetric;
 import org.apache.paimon.table.sink.CommitMessage;
+import org.apache.paimon.types.RowType;
 import org.apache.paimon.utils.RecordWriter;
 import org.apache.paimon.utils.SnapshotManager;
 
@@ -62,6 +63,7 @@ public abstract class MemoryFileStoreWrite<T> extends AbstractFileStoreWrite<T> 
             SnapshotManager snapshotManager,
             FileStoreScan scan,
             CoreOptions options,
+            RowType partitionType,
             @Nullable IndexMaintainer.Factory<T> indexFactory,
             @Nullable DeletionVectorsMaintainer.Factory dvMaintainerFactory,
             String tableName) {
@@ -71,7 +73,10 @@ public abstract class MemoryFileStoreWrite<T> extends AbstractFileStoreWrite<T> 
                 indexFactory,
                 dvMaintainerFactory,
                 tableName,
-                options.writeMaxWritersToSpill());
+                options.bucket(),
+                partitionType,
+                options.writeMaxWritersToSpill(),
+                options.legacyPartitionName());
         this.options = options;
         this.cacheManager = new CacheManager(options.lookupCacheMaxMemory());
     }
