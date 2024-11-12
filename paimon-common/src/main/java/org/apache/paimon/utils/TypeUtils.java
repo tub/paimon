@@ -38,6 +38,7 @@ import org.apache.paimon.types.VarCharType;
 import org.apache.paimon.shade.jackson2.com.fasterxml.jackson.core.JsonProcessingException;
 import org.apache.paimon.shade.jackson2.com.fasterxml.jackson.databind.JsonNode;
 import org.apache.paimon.shade.jackson2.com.fasterxml.jackson.databind.ObjectMapper;
+import org.apache.paimon.shade.jackson2.com.fasterxml.jackson.databind.node.TextNode;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -172,9 +173,14 @@ public class TypeUtils {
                     List<Object> resultList = new ArrayList<>();
                     for (JsonNode elementNode : arrayNode) {
                         if (!elementNode.isNull()) {
-                            String elementJson = elementNode.toString();
+                            String elementString;
+                            if (elementNode instanceof TextNode) {
+                                elementString = elementNode.asText();
+                            } else {
+                                elementString = elementNode.toString();
+                            }
                             Object elementObject =
-                                    castFromStringInternal(elementJson, elementType, isCdcValue);
+                                    castFromStringInternal(elementString, elementType, isCdcValue);
                             resultList.add(elementObject);
                         } else {
                             resultList.add(null);
@@ -222,11 +228,15 @@ public class TypeUtils {
                                                         entry.getKey(), keyType, isCdcValue);
                                         Object value = null;
                                         if (!entry.getValue().isNull()) {
+                                            String valueString;
+                                            if (entry.getValue() instanceof TextNode) {
+                                                valueString = entry.getValue().asText();
+                                            } else {
+                                                valueString = entry.getValue().toString();
+                                            }
                                             value =
                                                     castFromStringInternal(
-                                                            entry.getValue().toString(),
-                                                            valueType,
-                                                            isCdcValue);
+                                                            valueString, valueType, isCdcValue);
                                         }
                                         resultMap.put(key, value);
                                     });
@@ -252,9 +262,14 @@ public class TypeUtils {
                         DataField field = rowType.getFields().get(pos);
                         JsonNode fieldNode = rowNode.get(field.name());
                         if (fieldNode != null && !fieldNode.isNull()) {
-                            String fieldJson = fieldNode.toString();
+                            String fieldString;
+                            if (fieldNode instanceof TextNode) {
+                                fieldString = fieldNode.asText();
+                            } else {
+                                fieldString = fieldNode.toString();
+                            }
                             Object fieldObject =
-                                    castFromStringInternal(fieldJson, field.type(), isCdcValue);
+                                    castFromStringInternal(fieldString, field.type(), isCdcValue);
                             genericRow.setField(pos, fieldObject);
                         } else {
                             genericRow.setField(pos, null); // Handle null fields
