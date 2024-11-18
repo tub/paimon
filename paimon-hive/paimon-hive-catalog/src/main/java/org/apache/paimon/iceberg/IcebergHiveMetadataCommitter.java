@@ -100,7 +100,7 @@ public class IcebergHiveMetadataCommitter implements IcebergMetadataCommitter {
                 new CachedClientPool(
                         hiveConf,
                         options,
-                        HiveCatalogFactory.METASTORE_CLIENT_CLASS.defaultValue());
+                        options.getString(HiveCatalogFactory.METASTORE_CLIENT_CLASS));
     }
 
     @Override
@@ -158,6 +158,18 @@ public class IcebergHiveMetadataCommitter implements IcebergMetadataCommitter {
     private void createDatabase(String databaseName) throws Exception {
         Database database = new Database();
         database.setName(databaseName);
+        // Copied from AbstractIcebergCommitCallback.java
+        Path dbPath = table.location().getParent();
+        final String dbSuffix = ".db";
+        if (dbPath.getName().endsWith(dbSuffix)) {
+            String dbName =
+                    dbPath.getName().substring(0, dbPath.getName().length() - dbSuffix.length());
+            Path icebergDbPath = new Path(dbPath.getParent(), String.format("iceberg/%s/", dbName));
+            database.setLocationUri(icebergDbPath.toString());
+        } else {
+            throw new UnsupportedOperationException(
+                    "Storage type ICEBERG_WAREHOUSE can only be used on Paimon tables in a Paimon warehouse.");
+        }
         clients.execute(client -> client.createDatabase(database));
     }
 

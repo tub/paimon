@@ -174,9 +174,14 @@ public class IcebergManifestFileMeta {
         fields.add(new DataField(515, "sequence_number", DataTypes.BIGINT().notNull()));
         fields.add(new DataField(516, "min_sequence_number", DataTypes.BIGINT().notNull()));
         fields.add(new DataField(503, "added_snapshot_id", DataTypes.BIGINT()));
-        fields.add(new DataField(504, "added_files_count", DataTypes.INT().notNull()));
-        fields.add(new DataField(505, "existing_files_count", DataTypes.INT().notNull()));
-        fields.add(new DataField(506, "deleted_files_count", DataTypes.INT().notNull()));
+        // AWS Athena is still using the old field names which has been changed in
+        // https://github.com/apache/iceberg/pull/5338
+        fields.add(new DataField(504, "added_data_files_count", DataTypes.INT().notNull()));
+        fields.add(new DataField(505, "existing_data_files_count", DataTypes.INT().notNull()));
+        fields.add(new DataField(506, "deleted_data_files_count", DataTypes.INT().notNull()));
+        // fields.add(new DataField(504, "added_files_count", DataTypes.INT().notNull()));
+        // fields.add(new DataField(505, "existing_files_count", DataTypes.INT().notNull()));
+        // fields.add(new DataField(506, "deleted_files_count", DataTypes.INT().notNull()));
         fields.add(new DataField(512, "added_rows_count", DataTypes.BIGINT().notNull()));
         fields.add(new DataField(513, "existing_rows_count", DataTypes.BIGINT().notNull()));
         fields.add(new DataField(514, "deleted_rows_count", DataTypes.BIGINT().notNull()));
