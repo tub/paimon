@@ -22,7 +22,6 @@ import org.apache.paimon.catalog.Identifier;
 import org.apache.paimon.client.ClientPool;
 import org.apache.paimon.fs.Path;
 import org.apache.paimon.hive.HiveCatalog;
-import org.apache.paimon.hive.HiveCatalogFactory;
 import org.apache.paimon.hive.HiveTypeUtils;
 import org.apache.paimon.hive.pool.CachedClientPool;
 import org.apache.paimon.options.Options;
@@ -48,6 +47,8 @@ import javax.annotation.Nullable;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.stream.Collectors;
+
+import static org.apache.paimon.iceberg.AbstractIcebergCommitCallback.catalogDatabasePath;
 
 /**
  * {@link IcebergMetadataCommitter} to commit Iceberg metadata to Hive metastore, so the table can
@@ -98,9 +99,7 @@ public class IcebergHiveMetadataCommitter implements IcebergMetadataCommitter {
 
         this.clients =
                 new CachedClientPool(
-                        hiveConf,
-                        options,
-                        options.getString(HiveCatalogFactory.METASTORE_CLIENT_CLASS));
+                        hiveConf, options, options.getString(IcebergOptions.HIVE_CLIENT_CLASS));
     }
 
     @Override
@@ -158,18 +157,7 @@ public class IcebergHiveMetadataCommitter implements IcebergMetadataCommitter {
     private void createDatabase(String databaseName) throws Exception {
         Database database = new Database();
         database.setName(databaseName);
-        // Copied from AbstractIcebergCommitCallback.java
-        Path dbPath = table.location().getParent();
-        final String dbSuffix = ".db";
-        if (dbPath.getName().endsWith(dbSuffix)) {
-            String dbName =
-                    dbPath.getName().substring(0, dbPath.getName().length() - dbSuffix.length());
-            Path icebergDbPath = new Path(dbPath.getParent(), String.format("iceberg/%s/", dbName));
-            database.setLocationUri(icebergDbPath.toString());
-        } else {
-            throw new UnsupportedOperationException(
-                    "Storage type ICEBERG_WAREHOUSE can only be used on Paimon tables in a Paimon warehouse.");
-        }
+        database.setLocationUri(catalogDatabasePath(table).toString());
         clients.execute(client -> client.createDatabase(database));
     }
 

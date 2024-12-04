@@ -37,13 +37,14 @@ import org.apache.paimon.schema.SchemaChange.UpdateColumnPosition;
 import org.apache.paimon.schema.SchemaChange.UpdateColumnType;
 import org.apache.paimon.schema.SchemaChange.UpdateComment;
 import org.apache.paimon.table.FileStoreTableFactory;
+import org.apache.paimon.types.ArrayType;
 import org.apache.paimon.types.DataField;
 import org.apache.paimon.types.DataType;
 import org.apache.paimon.types.DataTypeCasts;
+import org.apache.paimon.types.MapType;
 import org.apache.paimon.types.ReassignFieldId;
 import org.apache.paimon.types.RowType;
 import org.apache.paimon.utils.BranchManager;
-import org.apache.paimon.utils.JsonSerdeUtil;
 import org.apache.paimon.utils.Preconditions;
 import org.apache.paimon.utils.SnapshotManager;
 import org.apache.paimon.utils.StringUtils;
@@ -78,6 +79,7 @@ import static org.apache.paimon.catalog.AbstractCatalog.DB_SUFFIX;
 import static org.apache.paimon.catalog.Identifier.UNKNOWN_DATABASE;
 import static org.apache.paimon.utils.BranchManager.DEFAULT_MAIN_BRANCH;
 import static org.apache.paimon.utils.FileUtils.listVersionedFiles;
+import static org.apache.paimon.utils.Preconditions.checkArgument;
 import static org.apache.paimon.utils.Preconditions.checkState;
 
 /** Schema Manager to manage schema versions. */
@@ -118,6 +120,24 @@ public class SchemaManager implements Serializable {
             return listVersionedFiles(fileIO, schemaDirectory(), SCHEMA_PREFIX)
                     .reduce(Math::max)
                     .map(this::schema);
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+    }
+
+    public long earliestCreationTime() {
+        try {
+            long earliest = 0;
+            if (!schemaExists(0)) {
+                Optional<Long> min =
+                        listVersionedFiles(fileIO, schemaDirectory(), SCHEMA_PREFIX)
+                                .reduce(Math::min);
+                checkArgument(min.isPresent());
+                earliest = min.get();
+            }
+
+            Path schemaPath = toSchemaPath(earliest);
+            return fileIO.getFileStatus(schemaPath).getModificationTime();
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }
@@ -290,7 +310,7 @@ public class SchemaManager implements Serializable {
                     DataType dataType =
                             ReassignFieldId.reassign(addColumn.dataType(), highestFieldId);
 
-                    new NestedColumnModifier(addColumn.fieldNames().toArray(new String[0])) {
+                    new NestedColumnModifier(addColumn.fieldNames()) {
                         @Override
                         protected void updateLastColumn(List<DataField> newFields, String fieldName)
                                 throws Catalog.ColumnAlreadyExistException {
@@ -319,8 +339,8 @@ public class SchemaManager implements Serializable {
                     }.updateIntermediateColumn(newFields, 0);
                 } else if (change instanceof RenameColumn) {
                     RenameColumn rename = (RenameColumn) change;
-                    renameColumnValidation(oldTableSchema, rename);
-                    new NestedColumnModifier(rename.fieldNames().toArray(new String[0])) {
+                    assertNotUpdatingPrimaryKeys(oldTableSchema, rename.fieldNames(), "rename");
+                    new NestedColumnModifier(rename.fieldNames()) {
                         @Override
                         protected void updateLastColumn(List<DataField> newFields, String fieldName)
                                 throws Catalog.ColumnNotExistException,
@@ -347,7 +367,7 @@ public class SchemaManager implements Serializable {
                 } else if (change instanceof DropColumn) {
                     DropColumn drop = (DropColumn) change;
                     dropColumnValidation(oldTableSchema, drop);
-                    new NestedColumnModifier(drop.fieldNames().toArray(new String[0])) {
+                    new NestedColumnModifier(drop.fieldNames()) {
                         @Override
                         protected void updateLastColumn(List<DataField> newFields, String fieldName)
                                 throws Catalog.ColumnNotExistException {
@@ -361,15 +381,10 @@ public class SchemaManager implements Serializable {
                     }.updateIntermediateColumn(newFields, 0);
                 } else if (change instanceof UpdateColumnType) {
                     UpdateColumnType update = (UpdateColumnType) change;
-                    if (oldTableSchema.partitionKeys().contains(update.fieldName())) {
-                        throw new IllegalArgumentException(
-                                String.format(
-                                        "Cannot update partition column [%s] type in the table[%s].",
-                                        update.fieldName(), tableRoot.getName()));
-                    }
+                    assertNotUpdatingPrimaryKeys(oldTableSchema, update.fieldNames(), "update");
                     updateNestedColumn(
                             newFields,
-                            new String[] {update.fieldName()},
+                            update.fieldNames(),
                             (field) -> {
                                 DataType targetType = update.newDataType();
                                 if (update.keepNullability()) {
@@ -382,13 +397,6 @@ public class SchemaManager implements Serializable {
                                         String.format(
                                                 "Column type %s[%s] cannot be converted to %s without loosing information.",
                                                 field.name(), field.type(), targetType));
-                                AtomicInteger dummyId = new AtomicInteger(0);
-                                if (dummyId.get() != 0) {
-                                    throw new RuntimeException(
-                                            String.format(
-                                                    "Update column to nested row type '%s' is not supported.",
-                                                    targetType));
-                                }
                                 return new DataField(
                                         field.id(), field.name(), targetType, field.description());
                             });
@@ -570,8 +578,8 @@ public class SchemaManager implements Serializable {
 
         Map<String, String> columnNames = Maps.newHashMap();
         for (RenameColumn renameColumn : renames) {
-            if (renameColumn.fieldNames().size() == 1) {
-                columnNames.put(renameColumn.fieldNames().get(0), renameColumn.newName());
+            if (renameColumn.fieldNames().length == 1) {
+                columnNames.put(renameColumn.fieldNames()[0], renameColumn.newName());
             }
         }
 
@@ -583,10 +591,10 @@ public class SchemaManager implements Serializable {
 
     private static void dropColumnValidation(TableSchema schema, DropColumn change) {
         // primary keys and partition keys can't be nested columns
-        if (change.fieldNames().size() > 1) {
+        if (change.fieldNames().length > 1) {
             return;
         }
-        String columnToDrop = change.fieldNames().get(0);
+        String columnToDrop = change.fieldNames()[0];
         if (schema.partitionKeys().contains(columnToDrop)
                 || schema.primaryKeys().contains(columnToDrop)) {
             throw new UnsupportedOperationException(
@@ -594,15 +602,17 @@ public class SchemaManager implements Serializable {
         }
     }
 
-    private static void renameColumnValidation(TableSchema schema, RenameColumn change) {
+    private static void assertNotUpdatingPrimaryKeys(
+            TableSchema schema, String[] fieldNames, String operation) {
         // partition keys can't be nested columns
-        if (change.fieldNames().size() > 1) {
+        if (fieldNames.length > 1) {
             return;
         }
-        String columnToRename = change.fieldNames().get(0);
+        String columnToRename = fieldNames[0];
         if (schema.partitionKeys().contains(columnToRename)) {
             throw new UnsupportedOperationException(
-                    String.format("Cannot rename partition column: [%s]", columnToRename));
+                    String.format(
+                            "Cannot " + operation + " partition column: [%s]", columnToRename));
         }
     }
 
@@ -627,17 +637,18 @@ public class SchemaManager implements Serializable {
                     continue;
                 }
 
-                List<DataField> nestedFields =
-                        new ArrayList<>(
-                                ((org.apache.paimon.types.RowType) field.type()).getFields());
-                updateIntermediateColumn(nestedFields, depth + 1);
+                String fullFieldName =
+                        String.join(".", Arrays.asList(updateFieldNames).subList(0, depth + 1));
+                List<DataField> nestedFields = new ArrayList<>();
+                int newDepth =
+                        depth + extractRowDataFields(field.type(), fullFieldName, nestedFields);
+                updateIntermediateColumn(nestedFields, newDepth);
                 newFields.set(
                         i,
                         new DataField(
                                 field.id(),
                                 field.name(),
-                                new org.apache.paimon.types.RowType(
-                                        field.type().isNullable(), nestedFields),
+                                wrapNewRowType(field.type(), nestedFields),
                                 field.description()));
                 return;
             }
@@ -645,6 +656,48 @@ public class SchemaManager implements Serializable {
             throw new Catalog.ColumnNotExistException(
                     identifierFromPath(tableRoot.toString(), true, branch),
                     String.join(".", Arrays.asList(updateFieldNames).subList(0, depth + 1)));
+        }
+
+        private int extractRowDataFields(
+                DataType type, String fullFieldName, List<DataField> nestedFields) {
+            switch (type.getTypeRoot()) {
+                case ROW:
+                    nestedFields.addAll(((RowType) type).getFields());
+                    return 1;
+                case ARRAY:
+                    return extractRowDataFields(
+                                    ((ArrayType) type).getElementType(),
+                                    fullFieldName,
+                                    nestedFields)
+                            + 1;
+                case MAP:
+                    return extractRowDataFields(
+                                    ((MapType) type).getValueType(), fullFieldName, nestedFields)
+                            + 1;
+                default:
+                    throw new IllegalArgumentException(
+                            fullFieldName + " is not a structured type.");
+            }
+        }
+
+        private DataType wrapNewRowType(DataType type, List<DataField> nestedFields) {
+            switch (type.getTypeRoot()) {
+                case ROW:
+                    return new RowType(type.isNullable(), nestedFields);
+                case ARRAY:
+                    return new ArrayType(
+                            type.isNullable(),
+                            wrapNewRowType(((ArrayType) type).getElementType(), nestedFields));
+                case MAP:
+                    MapType mapType = (MapType) type;
+                    return new MapType(
+                            type.isNullable(),
+                            mapType.getKeyType(),
+                            wrapNewRowType(mapType.getValueType(), nestedFields));
+                default:
+                    throw new IllegalStateException(
+                            "Trying to wrap a row type in " + type + ". This is unexpected.");
+            }
         }
 
         protected abstract void updateLastColumn(List<DataField> newFields, String fieldName)
@@ -724,11 +777,7 @@ public class SchemaManager implements Serializable {
 
     /** Read schema for schema id. */
     public TableSchema schema(long id) {
-        try {
-            return JsonSerdeUtil.fromJson(fileIO.readFileUtf8(toSchemaPath(id)), TableSchema.class);
-        } catch (IOException e) {
-            throw new UncheckedIOException(e);
-        }
+        return TableSchema.fromPath(fileIO, toSchemaPath(id));
     }
 
     /** Check if a schema exists. */
@@ -741,14 +790,6 @@ public class SchemaManager implements Serializable {
                     String.format(
                             "Failed to determine if schema '%s' exists in path %s.", id, path),
                     e);
-        }
-    }
-
-    public static TableSchema fromPath(FileIO fileIO, Path path) {
-        try {
-            return JsonSerdeUtil.fromJson(fileIO.readFileUtf8(path), TableSchema.class);
-        } catch (IOException e) {
-            throw new UncheckedIOException(e);
         }
     }
 

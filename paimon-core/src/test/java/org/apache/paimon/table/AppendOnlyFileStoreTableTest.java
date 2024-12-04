@@ -79,6 +79,7 @@ import java.util.stream.Collectors;
 import static org.apache.paimon.CoreOptions.BUCKET;
 import static org.apache.paimon.CoreOptions.BUCKET_KEY;
 import static org.apache.paimon.CoreOptions.FILE_INDEX_IN_MANIFEST_THRESHOLD;
+import static org.apache.paimon.CoreOptions.METADATA_STATS_MODE;
 import static org.apache.paimon.io.DataFileTestUtils.row;
 import static org.apache.paimon.table.sink.KeyAndBucketExtractor.bucket;
 import static org.apache.paimon.table.sink.KeyAndBucketExtractor.bucketKeyHashCode;
@@ -229,7 +230,6 @@ public class AppendOnlyFileStoreTableTest extends FileStoreTableTestBase {
     public void testBatchFilter(boolean statsDenseStore) throws Exception {
         Consumer<Options> optionsSetter =
                 options -> {
-                    options.set(CoreOptions.METADATA_STATS_DENSE_STORE, statsDenseStore);
                     if (statsDenseStore) {
                         options.set(CoreOptions.METADATA_STATS_MODE, "none");
                         options.set("fields.b.stats-mode", "full");
@@ -574,6 +574,7 @@ public class AppendOnlyFileStoreTableTest extends FileStoreTableTestBase {
                 createUnawareBucketFileStoreTable(
                         rowType,
                         options -> {
+                            options.set(METADATA_STATS_MODE, "NONE");
                             options.set(
                                     FileIndexOptions.FILE_INDEX
                                             + "."
@@ -600,7 +601,11 @@ public class AppendOnlyFileStoreTableTest extends FileStoreTableTestBase {
         write.write(GenericRow.of(1, BinaryString.fromString("B"), 3L));
         write.write(GenericRow.of(1, BinaryString.fromString("C"), 3L));
         result.addAll(write.prepareCommit(true, 0));
+        write.write(GenericRow.of(1, BinaryString.fromString("A"), 4L));
+        write.write(GenericRow.of(1, BinaryString.fromString("B"), 3L));
         write.write(GenericRow.of(1, BinaryString.fromString("C"), 4L));
+        write.write(GenericRow.of(1, BinaryString.fromString("D"), 2L));
+        write.write(GenericRow.of(1, BinaryString.fromString("D"), 4L));
         result.addAll(write.prepareCommit(true, 0));
         commit.commit(0, result);
         result.clear();
@@ -639,6 +644,7 @@ public class AppendOnlyFileStoreTableTest extends FileStoreTableTestBase {
                 createUnawareBucketFileStoreTable(
                         rowType,
                         options -> {
+                            options.set(METADATA_STATS_MODE, "NONE");
                             options.set(
                                     FileIndexOptions.FILE_INDEX
                                             + "."
@@ -665,7 +671,11 @@ public class AppendOnlyFileStoreTableTest extends FileStoreTableTestBase {
         write.write(GenericRow.of(1, BinaryString.fromString("B"), 3L));
         write.write(GenericRow.of(1, BinaryString.fromString("C"), 3L));
         result.addAll(write.prepareCommit(true, 0));
+        write.write(GenericRow.of(1, BinaryString.fromString("A"), 4L));
+        write.write(GenericRow.of(1, BinaryString.fromString("B"), 3L));
         write.write(GenericRow.of(1, BinaryString.fromString("C"), 4L));
+        write.write(GenericRow.of(1, BinaryString.fromString("D"), 2L));
+        write.write(GenericRow.of(1, BinaryString.fromString("D"), 4L));
         result.addAll(write.prepareCommit(true, 0));
         commit.commit(0, result);
         result.clear();

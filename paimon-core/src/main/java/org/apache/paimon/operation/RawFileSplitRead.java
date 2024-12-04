@@ -24,18 +24,21 @@ import org.apache.paimon.deletionvectors.ApplyDeletionVectorReader;
 import org.apache.paimon.deletionvectors.DeletionVector;
 import org.apache.paimon.disk.IOManager;
 import org.apache.paimon.fileindex.FileIndexResult;
+import org.apache.paimon.fileindex.bitmap.ApplyBitmapIndexRecordReader;
+import org.apache.paimon.fileindex.bitmap.BitmapIndexResult;
 import org.apache.paimon.format.FileFormatDiscover;
 import org.apache.paimon.format.FormatKey;
 import org.apache.paimon.format.FormatReaderContext;
 import org.apache.paimon.fs.FileIO;
 import org.apache.paimon.io.DataFileMeta;
 import org.apache.paimon.io.DataFilePathFactory;
+import org.apache.paimon.io.DataFileRecordReader;
 import org.apache.paimon.io.FileIndexEvaluator;
-import org.apache.paimon.io.FileRecordReader;
 import org.apache.paimon.mergetree.compact.ConcatRecordReader;
 import org.apache.paimon.partition.PartitionUtils;
 import org.apache.paimon.predicate.Predicate;
-import org.apache.paimon.reader.EmptyRecordReader;
+import org.apache.paimon.reader.EmptyFileRecordReader;
+import org.apache.paimon.reader.FileRecordReader;
 import org.apache.paimon.reader.ReaderSupplier;
 import org.apache.paimon.reader.RecordReader;
 import org.apache.paimon.schema.SchemaManager;
@@ -185,7 +188,7 @@ public class RawFileSplitRead implements SplitRead<InternalRow> {
         return ConcatRecordReader.create(suppliers);
     }
 
-    private RecordReader<InternalRow> createFileReader(
+    private FileRecordReader<InternalRow> createFileReader(
             BinaryRow partition,
             DataFileMeta file,
             DataFilePathFactory dataFilePathFactory,
@@ -202,7 +205,7 @@ public class RawFileSplitRead implements SplitRead<InternalRow> {
                             dataFilePathFactory,
                             file);
             if (!fileIndexResult.remain()) {
-                return new EmptyRecordReader<>();
+                return new EmptyFileRecordReader<>();
             }
         }
 
@@ -212,13 +215,19 @@ public class RawFileSplitRead implements SplitRead<InternalRow> {
                         dataFilePathFactory.toPath(file.fileName()),
                         file.fileSize(),
                         fileIndexResult);
-        FileRecordReader fileRecordReader =
-                new FileRecordReader(
+        FileRecordReader<InternalRow> fileRecordReader =
+                new DataFileRecordReader(
                         bulkFormatMapping.getReaderFactory(),
                         formatReaderContext,
                         bulkFormatMapping.getIndexMapping(),
                         bulkFormatMapping.getCastMapping(),
                         PartitionUtils.create(bulkFormatMapping.getPartitionPair(), partition));
+
+        if (fileIndexResult instanceof BitmapIndexResult) {
+            fileRecordReader =
+                    new ApplyBitmapIndexRecordReader(
+                            fileRecordReader, (BitmapIndexResult) fileIndexResult);
+        }
 
         DeletionVector deletionVector = dvFactory == null ? null : dvFactory.get();
         if (deletionVector != null && !deletionVector.isEmpty()) {
