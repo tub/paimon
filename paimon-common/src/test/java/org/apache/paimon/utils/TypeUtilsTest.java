@@ -206,6 +206,15 @@ public class TypeUtilsTest {
     }
 
     @Test
+    public void testLocalZonedTimestampCastFromString() {
+        String value = "2017-12-12 09:30:00";
+        Object result = TypeUtils.castFromString(value, DataTypes.TIMESTAMP_WITH_LOCAL_TIME_ZONE());
+        Timestamp expected =
+                Timestamp.fromLocalDateTime(LocalDateTime.parse("2017-12-12T09:30:00"));
+        assertThat(result).isEqualTo(expected);
+    }
+
+    @Test
     public void testMapStringStringCastFromString() {
         String value = "{\"a\":\"b\", \"c\":\"d\"}";
         Object result =
