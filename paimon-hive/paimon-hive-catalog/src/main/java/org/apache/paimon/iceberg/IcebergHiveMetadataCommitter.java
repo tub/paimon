@@ -33,6 +33,7 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.metastore.IMetaStoreClient;
 import org.apache.hadoop.hive.metastore.api.Database;
+import org.apache.hadoop.hive.metastore.api.EnvironmentContext;
 import org.apache.hadoop.hive.metastore.api.FieldSchema;
 import org.apache.hadoop.hive.metastore.api.NoSuchObjectException;
 import org.apache.hadoop.hive.metastore.api.SerDeInfo;
@@ -136,13 +137,17 @@ public class IcebergHiveMetadataCommitter implements IcebergMetadataCommitter {
                     .put("previous_metadata_location", baseMetadataPath.toString());
         }
 
+        String skipAWSGlueArchive = System.getProperty("glue.skip-archive");
+        EnvironmentContext environmentContext = new EnvironmentContext();
+        environmentContext.putToProperties("skipAWSGlueArchive", skipAWSGlueArchive);
+
         clients.execute(
                 client ->
-                        client.alter_table(
+                        client.alter_table_with_environmentContext(
                                 identifier.getDatabaseName(),
                                 identifier.getTableName(),
                                 hiveTable,
-                                true));
+                                environmentContext));
     }
 
     private boolean databaseExists(String databaseName) throws Exception {
