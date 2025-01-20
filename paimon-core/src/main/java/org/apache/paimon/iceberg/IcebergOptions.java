@@ -93,7 +93,7 @@ public class IcebergOptions {
     public static final ConfigOption<Boolean> GLUE_SKIP_ARCHIVE =
             key("metadata.iceberg.glue.skip-archive")
                     .booleanType()
-                    .defaultValue(true)
+                    .defaultValue(false)
                     .withDescription("Skip archive for AWS Glue catalog.");
 
     /** Where to store Iceberg metadata. */
