@@ -30,6 +30,7 @@ import org.apache.paimon.types.DataField;
 import org.apache.paimon.utils.Preconditions;
 
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.hive.common.StatsSetupConst;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.metastore.IMetaStoreClient;
 import org.apache.hadoop.hive.metastore.api.Database;
@@ -140,7 +141,7 @@ public class IcebergHiveMetadataCommitter implements IcebergMetadataCommitter {
         Options options = new Options(table.options());
         boolean skipAWSGlueArchive = options.get(IcebergOptions.GLUE_SKIP_ARCHIVE);
         EnvironmentContext environmentContext = new EnvironmentContext();
-        environmentContext.putToProperties("CASCADE", StatsSetupConst.TRUE);
+        environmentContext.putToProperties(StatsSetupConst.CASCADE, StatsSetupConst.TRUE);
         environmentContext.putToProperties(
                 "skipAWSGlueArchive", Boolean.toString(skipAWSGlueArchive));
 
