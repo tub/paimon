@@ -90,6 +90,12 @@ public class IcebergOptions {
                     .defaultValue("org.apache.hadoop.hive.metastore.HiveMetaStoreClient")
                     .withDescription("Hive client class name for Iceberg Hive Catalog.");
 
+    public static final ConfigOption<Boolean> GLUE_SKIP_ARCHIVE =
+            key("metadata.iceberg.glue.skip-archive")
+                    .booleanType()
+                    .defaultValue(true)
+                    .withDescription("Skip archive for AWS Glue catalog.");
+
     /** Where to store Iceberg metadata. */
     public enum StorageType implements DescribedEnum {
         DISABLED("disabled", "Disable Iceberg compatibility support."),

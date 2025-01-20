@@ -137,9 +137,11 @@ public class IcebergHiveMetadataCommitter implements IcebergMetadataCommitter {
                     .put("previous_metadata_location", baseMetadataPath.toString());
         }
 
-        String skipAWSGlueArchive = System.getProperty("glue.skip-archive", "true");
+        Options options = new Options(table.options());
+        boolean skipAWSGlueArchive = options.get(IcebergOptions.GLUE_SKIP_ARCHIVE);
         EnvironmentContext environmentContext = new EnvironmentContext();
-        environmentContext.putToProperties("skipAWSGlueArchive", skipAWSGlueArchive);
+        environmentContext.putToProperties(
+                "skipAWSGlueArchive", Boolean.toString(skipAWSGlueArchive));
 
         clients.execute(
                 client ->
