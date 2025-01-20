@@ -140,6 +140,7 @@ public class IcebergHiveMetadataCommitter implements IcebergMetadataCommitter {
         Options options = new Options(table.options());
         boolean skipAWSGlueArchive = options.get(IcebergOptions.GLUE_SKIP_ARCHIVE);
         EnvironmentContext environmentContext = new EnvironmentContext();
+        environmentContext.putToProperties("CASCADE", StatsSetupConst.TRUE);
         environmentContext.putToProperties(
                 "skipAWSGlueArchive", Boolean.toString(skipAWSGlueArchive));
 
