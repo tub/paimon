@@ -28,7 +28,6 @@ import org.apache.paimon.flink.log.LogSourceProvider;
 import org.apache.paimon.flink.log.LogStoreTableFactory;
 import org.apache.paimon.flink.lookup.FileStoreLookupFunction;
 import org.apache.paimon.flink.lookup.LookupRuntimeProviderFactory;
-import org.apache.paimon.manifest.PartitionEntry;
 import org.apache.paimon.options.ConfigOption;
 import org.apache.paimon.options.Options;
 import org.apache.paimon.predicate.Predicate;
@@ -36,7 +35,8 @@ import org.apache.paimon.schema.TableSchema;
 import org.apache.paimon.table.DataTable;
 import org.apache.paimon.table.FileStoreTable;
 import org.apache.paimon.table.Table;
-import org.apache.paimon.table.source.TableScan;
+import org.apache.paimon.table.source.DataSplit;
+import org.apache.paimon.table.source.Split;
 import org.apache.paimon.utils.Projection;
 
 import org.apache.flink.api.common.eventtime.WatermarkStrategy;
@@ -74,6 +74,7 @@ import static org.apache.paimon.flink.FlinkConnectorOptions.SCAN_WATERMARK_ALIGN
 import static org.apache.paimon.flink.FlinkConnectorOptions.SCAN_WATERMARK_ALIGNMENT_UPDATE_INTERVAL;
 import static org.apache.paimon.flink.FlinkConnectorOptions.SCAN_WATERMARK_EMIT_STRATEGY;
 import static org.apache.paimon.flink.FlinkConnectorOptions.SCAN_WATERMARK_IDLE_TIMEOUT;
+import static org.apache.paimon.utils.Preconditions.checkNotNull;
 
 /**
  * Table source to create {@link StaticFileStoreSource} or {@link ContinuousFileStoreSource} under
@@ -93,39 +94,39 @@ public abstract class BaseDataTableSource extends FlinkTableSource
                     CoreOptions.SCAN_VERSION);
 
     protected final ObjectIdentifier tableIdentifier;
-    protected final boolean streaming;
+    protected final boolean unbounded;
     protected final DynamicTableFactory.Context context;
     @Nullable protected final LogStoreTableFactory logStoreTableFactory;
 
     @Nullable protected WatermarkStrategy<RowData> watermarkStrategy;
-    protected boolean isBatchCountStar;
+    @Nullable protected Long countPushed;
 
     public BaseDataTableSource(
             ObjectIdentifier tableIdentifier,
             Table table,
-            boolean streaming,
+            boolean unbounded,
             DynamicTableFactory.Context context,
             @Nullable LogStoreTableFactory logStoreTableFactory,
             @Nullable Predicate predicate,
             @Nullable int[][] projectFields,
             @Nullable Long limit,
             @Nullable WatermarkStrategy<RowData> watermarkStrategy,
-            boolean isBatchCountStar) {
+            @Nullable Long countPushed) {
         super(table, predicate, projectFields, limit);
         this.tableIdentifier = tableIdentifier;
-        this.streaming = streaming;
+        this.unbounded = unbounded;
         this.context = context;
         this.logStoreTableFactory = logStoreTableFactory;
         this.predicate = predicate;
         this.projectFields = projectFields;
         this.limit = limit;
         this.watermarkStrategy = watermarkStrategy;
-        this.isBatchCountStar = isBatchCountStar;
+        this.countPushed = countPushed;
     }
 
     @Override
     public ChangelogMode getChangelogMode() {
-        if (!streaming) {
+        if (!unbounded) {
             // batch merge all, return insert only
             return ChangelogMode.insertOnly();
         }
@@ -159,7 +160,7 @@ public abstract class BaseDataTableSource extends FlinkTableSource
 
     @Override
     public ScanRuntimeProvider getScanRuntimeProvider(ScanContext scanContext) {
-        if (isBatchCountStar) {
+        if (countPushed != null) {
             return createCountStarScan();
         }
 
@@ -194,7 +195,7 @@ public abstract class BaseDataTableSource extends FlinkTableSource
         FlinkSourceBuilder sourceBuilder =
                 new FlinkSourceBuilder(table)
                         .sourceName(tableIdentifier.asSummaryString())
-                        .sourceBounded(!streaming)
+                        .sourceBounded(!unbounded)
                         .logSourceProvider(logSourceProvider)
                         .projection(projectFields)
                         .predicate(predicate)
@@ -203,7 +204,7 @@ public abstract class BaseDataTableSource extends FlinkTableSource
                         .dynamicPartitionFilteringFields(dynamicPartitionFilteringFields());
 
         return new PaimonDataStreamScanProvider(
-                !streaming,
+                !unbounded,
                 env ->
                         sourceBuilder
                                 .sourceParallelism(inferSourceParallelism(env))
@@ -212,10 +213,8 @@ public abstract class BaseDataTableSource extends FlinkTableSource
     }
 
     private ScanRuntimeProvider createCountStarScan() {
-        TableScan scan = table.newReadBuilder().withFilter(predicate).newScan();
-        List<PartitionEntry> partitionEntries = scan.listPartitionEntries();
-        long rowCount = partitionEntries.stream().mapToLong(PartitionEntry::recordCount).sum();
-        NumberSequenceRowSource source = new NumberSequenceRowSource(rowCount, rowCount);
+        checkNotNull(countPushed);
+        NumberSequenceRowSource source = new NumberSequenceRowSource(countPushed, countPushed);
         return new SourceProvider() {
             @Override
             public Source<RowData, ?, ?> createSource() {
@@ -295,20 +294,11 @@ public abstract class BaseDataTableSource extends FlinkTableSource
             List<int[]> groupingSets,
             List<AggregateExpression> aggregateExpressions,
             DataType producedDataType) {
-        if (isStreaming()) {
+        if (isUnbounded()) {
             return false;
         }
 
         if (!(table instanceof DataTable)) {
-            return false;
-        }
-
-        if (!table.primaryKeys().isEmpty()) {
-            return false;
-        }
-
-        CoreOptions options = ((DataTable) table).coreOptions();
-        if (options.deletionVectorsEnabled()) {
             return false;
         }
 
@@ -334,7 +324,22 @@ public abstract class BaseDataTableSource extends FlinkTableSource
             return false;
         }
 
-        isBatchCountStar = true;
+        List<Split> splits =
+                table.newReadBuilder().dropStats().withFilter(predicate).newScan().plan().splits();
+        long countPushed = 0;
+        for (Split s : splits) {
+            if (!(s instanceof DataSplit)) {
+                return false;
+            }
+            DataSplit split = (DataSplit) s;
+            if (!split.mergedRowCountAvailable()) {
+                return false;
+            }
+
+            countPushed += split.mergedRowCount();
+        }
+
+        this.countPushed = countPushed;
         return true;
     }
 
@@ -344,7 +349,7 @@ public abstract class BaseDataTableSource extends FlinkTableSource
     }
 
     @Override
-    public boolean isStreaming() {
-        return streaming;
+    public boolean isUnbounded() {
+        return unbounded;
     }
 }

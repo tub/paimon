@@ -20,10 +20,12 @@ package org.apache.paimon.jdbc;
 
 import org.apache.paimon.annotation.VisibleForTesting;
 import org.apache.paimon.catalog.AbstractCatalog;
+import org.apache.paimon.catalog.CatalogLoader;
 import org.apache.paimon.catalog.CatalogLockContext;
 import org.apache.paimon.catalog.CatalogLockFactory;
 import org.apache.paimon.catalog.Database;
 import org.apache.paimon.catalog.Identifier;
+import org.apache.paimon.catalog.PropertyChange;
 import org.apache.paimon.fs.FileIO;
 import org.apache.paimon.fs.Path;
 import org.apache.paimon.operation.Lock;
@@ -33,11 +35,13 @@ import org.apache.paimon.schema.Schema;
 import org.apache.paimon.schema.SchemaChange;
 import org.apache.paimon.schema.SchemaManager;
 import org.apache.paimon.schema.TableSchema;
+import org.apache.paimon.utils.Pair;
 import org.apache.paimon.utils.Preconditions;
 
 import org.apache.paimon.shade.guava30.com.google.common.collect.ImmutableMap;
 import org.apache.paimon.shade.guava30.com.google.common.collect.Lists;
 import org.apache.paimon.shade.guava30.com.google.common.collect.Maps;
+import org.apache.paimon.shade.guava30.com.google.common.collect.Sets;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -52,12 +56,16 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
+import java.util.concurrent.Callable;
 import java.util.stream.Collectors;
 
 import static org.apache.paimon.jdbc.JdbcCatalogLock.acquireTimeout;
 import static org.apache.paimon.jdbc.JdbcCatalogLock.checkMaxSleep;
+import static org.apache.paimon.jdbc.JdbcUtils.deleteProperties;
 import static org.apache.paimon.jdbc.JdbcUtils.execute;
 import static org.apache.paimon.jdbc.JdbcUtils.insertProperties;
+import static org.apache.paimon.jdbc.JdbcUtils.updateProperties;
 import static org.apache.paimon.jdbc.JdbcUtils.updateTable;
 
 /* This file is based on source code from the Iceberg Project (http://iceberg.apache.org/), licensed by the Apache
@@ -144,6 +152,11 @@ public class JdbcCatalog extends AbstractCatalog {
     }
 
     @Override
+    public CatalogLoader catalogLoader() {
+        return new JdbcCatalogLoader(fileIO, catalogKey, options, warehouse);
+    }
+
+    @Override
     public List<String> listDatabases() {
         List<String> databases = Lists.newArrayList();
         databases.addAll(
@@ -198,6 +211,45 @@ public class JdbcCatalog extends AbstractCatalog {
     }
 
     @Override
+    protected void alterDatabaseImpl(String name, List<PropertyChange> changes) {
+        Pair<Map<String, String>, Set<String>> setPropertiesToRemoveKeys =
+                PropertyChange.getSetPropertiesToRemoveKeys(changes);
+        Map<String, String> setProperties = setPropertiesToRemoveKeys.getLeft();
+        Set<String> removeKeys = setPropertiesToRemoveKeys.getRight();
+        Map<String, String> startingProperties = fetchProperties(name);
+        Map<String, String> inserts = Maps.newHashMap();
+        Map<String, String> updates = Maps.newHashMap();
+        Set<String> removes = Sets.newHashSet();
+        if (!setProperties.isEmpty()) {
+            setProperties.forEach(
+                    (k, v) -> {
+                        if (!startingProperties.containsKey(k)) {
+                            inserts.put(k, v);
+                        } else {
+                            updates.put(k, v);
+                        }
+                    });
+        }
+        if (!removeKeys.isEmpty()) {
+            removeKeys.forEach(
+                    k -> {
+                        if (startingProperties.containsKey(k)) {
+                            removes.add(k);
+                        }
+                    });
+        }
+        if (!inserts.isEmpty()) {
+            insertProperties(connections, catalogKey, name, inserts);
+        }
+        if (!updates.isEmpty()) {
+            updateProperties(connections, catalogKey, name, updates);
+        }
+        if (!removes.isEmpty()) {
+            deleteProperties(connections, catalogKey, name, removes);
+        }
+    }
+
+    @Override
     protected List<String> listTablesImpl(String databaseName) {
         return fetch(
                 row -> row.getString(JdbcUtils.TABLE_NAME),
@@ -238,7 +290,8 @@ public class JdbcCatalog extends AbstractCatalog {
     protected void createTableImpl(Identifier identifier, Schema schema) {
         try {
             // create table file
-            getSchemaManager(identifier).createTable(schema);
+            SchemaManager schemaManager = getSchemaManager(identifier);
+            runWithLock(identifier, () -> schemaManager.createTable(schema));
             // Update schema metadata
             Path path = getTableLocation(identifier);
             int insertRecord =
@@ -299,28 +352,36 @@ public class JdbcCatalog extends AbstractCatalog {
 
     @Override
     protected void alterTableImpl(Identifier identifier, List<SchemaChange> changes)
-            throws TableNotExistException, ColumnAlreadyExistException, ColumnNotExistException {
+            throws ColumnAlreadyExistException, TableNotExistException, ColumnNotExistException {
         assertMainBranch(identifier);
         SchemaManager schemaManager = getSchemaManager(identifier);
-        schemaManager.commitChanges(changes);
+        try {
+            runWithLock(identifier, () -> schemaManager.commitChanges(changes));
+        } catch (TableNotExistException
+                | ColumnAlreadyExistException
+                | ColumnNotExistException
+                | RuntimeException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to alter table " + identifier.getFullName(), e);
+        }
     }
 
     @Override
-    protected TableSchema getDataTableSchema(Identifier identifier) throws TableNotExistException {
+    protected TableSchema loadTableSchema(Identifier identifier) throws TableNotExistException {
         assertMainBranch(identifier);
         if (!JdbcUtils.tableExists(
                 connections, catalogKey, identifier.getDatabaseName(), identifier.getTableName())) {
             throw new TableNotExistException(identifier);
         }
         Path tableLocation = getTableLocation(identifier);
-        return new SchemaManager(fileIO, tableLocation)
-                .latest()
+        return tableSchemaInFileSystem(tableLocation, identifier.getBranchNameOrDefault())
                 .orElseThrow(
                         () -> new RuntimeException("There is no paimon table in " + tableLocation));
     }
 
     @Override
-    public boolean allowUpperCase() {
+    public boolean caseSensitive() {
         return false;
     }
 
@@ -334,9 +395,9 @@ public class JdbcCatalog extends AbstractCatalog {
         return Optional.of(new JdbcCatalogLockContext(catalogKey, options));
     }
 
-    private Lock lock(Identifier identifier) {
+    public <T> T runWithLock(Identifier identifier, Callable<T> callable) throws Exception {
         if (!lockEnabled()) {
-            return new Lock.EmptyLock();
+            return callable.call();
         }
         JdbcCatalogLock lock =
                 new JdbcCatalogLock(
@@ -344,7 +405,7 @@ public class JdbcCatalog extends AbstractCatalog {
                         catalogKey,
                         checkMaxSleep(options.toMap()),
                         acquireTimeout(options.toMap()));
-        return Lock.fromCatalog(lock, identifier);
+        return Lock.fromCatalog(lock, identifier).runWithLock(callable);
     }
 
     @Override
@@ -353,7 +414,7 @@ public class JdbcCatalog extends AbstractCatalog {
     }
 
     private SchemaManager getSchemaManager(Identifier identifier) {
-        return new SchemaManager(fileIO, getTableLocation(identifier)).withLock(lock(identifier));
+        return new SchemaManager(fileIO, getTableLocation(identifier));
     }
 
     private Map<String, String> fetchProperties(String databaseName) {

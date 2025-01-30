@@ -18,9 +18,12 @@
 
 package org.apache.paimon.rest;
 
+import org.apache.paimon.rest.exceptions.AlreadyExistsException;
 import org.apache.paimon.rest.exceptions.BadRequestException;
 import org.apache.paimon.rest.exceptions.ForbiddenException;
+import org.apache.paimon.rest.exceptions.NoSuchResourceException;
 import org.apache.paimon.rest.exceptions.NotAuthorizedException;
+import org.apache.paimon.rest.exceptions.NotImplementedException;
 import org.apache.paimon.rest.exceptions.RESTException;
 import org.apache.paimon.rest.exceptions.ServiceFailureException;
 import org.apache.paimon.rest.exceptions.ServiceUnavailableException;
@@ -55,14 +58,20 @@ public class DefaultErrorHandlerTest {
                 ForbiddenException.class,
                 () -> defaultErrorHandler.accept(generateErrorResponse(403)));
         assertThrows(
+                NoSuchResourceException.class,
+                () -> defaultErrorHandler.accept(generateErrorResponse(404)));
+        assertThrows(
                 RESTException.class, () -> defaultErrorHandler.accept(generateErrorResponse(405)));
         assertThrows(
                 RESTException.class, () -> defaultErrorHandler.accept(generateErrorResponse(406)));
         assertThrows(
+                AlreadyExistsException.class,
+                () -> defaultErrorHandler.accept(generateErrorResponse(409)));
+        assertThrows(
                 ServiceFailureException.class,
                 () -> defaultErrorHandler.accept(generateErrorResponse(500)));
         assertThrows(
-                UnsupportedOperationException.class,
+                NotImplementedException.class,
                 () -> defaultErrorHandler.accept(generateErrorResponse(501)));
         assertThrows(
                 RESTException.class, () -> defaultErrorHandler.accept(generateErrorResponse(502)));
@@ -72,6 +81,6 @@ public class DefaultErrorHandlerTest {
     }
 
     private ErrorResponse generateErrorResponse(int code) {
-        return new ErrorResponse("message", code, new ArrayList<String>());
+        return new ErrorResponse(null, null, "message", code, new ArrayList<String>());
     }
 }

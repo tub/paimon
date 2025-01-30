@@ -62,6 +62,7 @@ import org.apache.paimon.types.TimestampType;
 import org.apache.paimon.types.TinyIntType;
 import org.apache.paimon.types.VarBinaryType;
 import org.apache.paimon.types.VarCharType;
+import org.apache.paimon.types.VariantType;
 
 /**
  * This is a util about how to expand the {@link ColumnVector}s with the partition row and index
@@ -97,8 +98,7 @@ public class VectorMappingUtils {
         return dataType.accept(visitor);
     }
 
-    public static ColumnVector[] createIndexMappedVectors(
-            int[] indexMapping, ColumnVector[] vectors) {
+    public static ColumnVector[] createMappedVectors(int[] indexMapping, ColumnVector[] vectors) {
         ColumnVector[] newVectors = new ColumnVector[indexMapping.length];
         for (int i = 0; i < indexMapping.length; i++) {
             int realIndex = indexMapping[i];
@@ -323,6 +323,11 @@ public class VectorMappingUtils {
         }
 
         @Override
+        public ColumnVector visit(VariantType variantType) {
+            throw new UnsupportedOperationException("VariantType is not supported.");
+        }
+
+        @Override
         public ColumnVector visit(ArrayType arrayType) {
             return new ArrayColumnVector() {
                 @Override
@@ -355,18 +360,6 @@ public class VectorMappingUtils {
                 public boolean isNullAt(int i) {
                     return partition.isNullAt(index);
                 }
-
-                @Override
-                public ColumnVector getKeyColumnVector() {
-                    throw new UnsupportedOperationException(
-                            "Doesn't support getting key ColumnVector.");
-                }
-
-                @Override
-                public ColumnVector getValueColumnVector() {
-                    throw new UnsupportedOperationException(
-                            "Doesn't support getting value ColumnVector.");
-                }
             };
         }
 
@@ -381,18 +374,6 @@ public class VectorMappingUtils {
                 @Override
                 public boolean isNullAt(int i) {
                     return partition.isNullAt(index);
-                }
-
-                @Override
-                public ColumnVector getKeyColumnVector() {
-                    throw new UnsupportedOperationException(
-                            "Doesn't support getting key ColumnVector.");
-                }
-
-                @Override
-                public ColumnVector getValueColumnVector() {
-                    throw new UnsupportedOperationException(
-                            "Doesn't support getting value ColumnVector.");
                 }
             };
         }

@@ -23,8 +23,10 @@ import org.apache.paimon.data.BinaryRow;
 import org.apache.paimon.manifest.FileKind;
 import org.apache.paimon.manifest.ManifestCommittable;
 import org.apache.paimon.manifest.ManifestEntry;
+import org.apache.paimon.table.PartitionHandler;
 import org.apache.paimon.table.sink.CommitCallback;
 import org.apache.paimon.table.sink.CommitMessage;
+import org.apache.paimon.utils.InternalRowPartitionComputer;
 
 import org.apache.paimon.shade.guava30.com.google.common.cache.Cache;
 import org.apache.paimon.shade.guava30.com.google.common.cache.CacheBuilder;
@@ -47,10 +49,13 @@ public class AddPartitionCommitCallback implements CommitCallback {
                     .softValues()
                     .build();
 
-    private final MetastoreClient client;
+    private final PartitionHandler partitionHandler;
+    private final InternalRowPartitionComputer partitionComputer;
 
-    public AddPartitionCommitCallback(MetastoreClient client) {
-        this.client = client;
+    public AddPartitionCommitCallback(
+            PartitionHandler partitionHandler, InternalRowPartitionComputer partitionComputer) {
+        this.partitionHandler = partitionHandler;
+        this.partitionComputer = partitionComputer;
     }
 
     @Override
@@ -72,20 +77,6 @@ public class AddPartitionCommitCallback implements CommitCallback {
         addPartitions(partitions);
     }
 
-    private void addPartition(BinaryRow partition) {
-        try {
-            boolean added = cache.get(partition, () -> false);
-            if (added) {
-                return;
-            }
-
-            client.addPartition(partition);
-            cache.put(partition, true);
-        } catch (Exception e) {
-            throw new RuntimeException(e);
-        }
-    }
-
     private void addPartitions(Set<BinaryRow> partitions) {
         try {
             List<BinaryRow> newPartitions = new ArrayList<>();
@@ -95,7 +86,10 @@ public class AddPartitionCommitCallback implements CommitCallback {
                 }
             }
             if (!newPartitions.isEmpty()) {
-                client.addPartitions(newPartitions);
+                partitionHandler.createPartitions(
+                        newPartitions.stream()
+                                .map(partitionComputer::generatePartValues)
+                                .collect(Collectors.toList()));
                 newPartitions.forEach(partition -> cache.put(partition, true));
             }
         } catch (Exception e) {
@@ -105,6 +99,6 @@ public class AddPartitionCommitCallback implements CommitCallback {
 
     @Override
     public void close() throws Exception {
-        client.close();
+        partitionHandler.close();
     }
 }

@@ -115,7 +115,7 @@ public class TableSchema implements Serializable {
         this.highestFieldId = highestFieldId;
         this.partitionKeys = partitionKeys;
         this.primaryKeys = primaryKeys;
-        this.options = Collections.unmodifiableMap(options);
+        this.options = options;
         this.comment = comment;
         this.timeMillis = timeMillis;
 
@@ -331,6 +331,10 @@ public class TableSchema implements Serializable {
         return rowType.getFields();
     }
 
+    public Schema toSchema() {
+        return new Schema(fields, partitionKeys, primaryKeys, options, comment);
+    }
+
     // =================== Utils for reading =========================
 
     public static TableSchema fromJson(String json) {
@@ -353,5 +357,22 @@ public class TableSchema implements Serializable {
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }
+    }
+
+    public static TableSchema create(long schemaId, Schema schema) {
+        List<DataField> fields = schema.fields();
+        List<String> partitionKeys = schema.partitionKeys();
+        List<String> primaryKeys = schema.primaryKeys();
+        Map<String, String> options = schema.options();
+        int highestFieldId = RowType.currentHighestFieldId(fields);
+
+        return new TableSchema(
+                schemaId,
+                fields,
+                highestFieldId,
+                partitionKeys,
+                primaryKeys,
+                options,
+                schema.comment());
     }
 }

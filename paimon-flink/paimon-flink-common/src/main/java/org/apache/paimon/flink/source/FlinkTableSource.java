@@ -40,6 +40,7 @@ import org.apache.flink.table.connector.source.abilities.SupportsFilterPushDown;
 import org.apache.flink.table.connector.source.abilities.SupportsLimitPushDown;
 import org.apache.flink.table.connector.source.abilities.SupportsProjectionPushDown;
 import org.apache.flink.table.expressions.ResolvedExpression;
+import org.apache.flink.table.types.DataType;
 import org.apache.flink.table.types.logical.RowType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -107,7 +108,7 @@ public abstract class FlinkTableSource
                 unConsumedFilters.add(filter);
             } else {
                 Predicate p = predicateOptional.get();
-                if (isStreaming() || !p.visit(onlyPartFieldsVisitor)) {
+                if (isUnbounded() || !p.visit(onlyPartFieldsVisitor)) {
                     unConsumedFilters.add(filter);
                 } else {
                     consumedFilters.add(filter);
@@ -123,11 +124,11 @@ public abstract class FlinkTableSource
 
     @Override
     public boolean supportsNestedProjection() {
-        return false;
+        return true;
     }
 
     @Override
-    public void applyProjection(int[][] projectedFields) {
+    public void applyProjection(int[][] projectedFields, DataType producedDataType) {
         this.projectFields = projectedFields;
     }
 
@@ -136,7 +137,7 @@ public abstract class FlinkTableSource
         this.limit = limit;
     }
 
-    public abstract boolean isStreaming();
+    public abstract boolean isUnbounded();
 
     @Nullable
     protected Integer inferSourceParallelism(StreamExecutionEnvironment env) {
@@ -149,7 +150,7 @@ public abstract class FlinkTableSource
         }
         Integer parallelism = options.get(FlinkConnectorOptions.SCAN_PARALLELISM);
         if (parallelism == null && options.get(FlinkConnectorOptions.INFER_SCAN_PARALLELISM)) {
-            if (isStreaming()) {
+            if (isUnbounded()) {
                 parallelism = Math.max(1, options.get(CoreOptions.BUCKET));
             } else {
                 scanSplitsForInference();

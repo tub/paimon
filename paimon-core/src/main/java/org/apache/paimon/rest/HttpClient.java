@@ -18,12 +18,15 @@
 
 package org.apache.paimon.rest;
 
+import org.apache.paimon.annotation.VisibleForTesting;
+import org.apache.paimon.options.Options;
 import org.apache.paimon.rest.exceptions.RESTException;
 import org.apache.paimon.rest.responses.ErrorResponse;
+import org.apache.paimon.utils.StringUtils;
 
 import org.apache.paimon.shade.jackson2.com.fasterxml.jackson.core.JsonProcessingException;
-import org.apache.paimon.shade.jackson2.com.fasterxml.jackson.databind.ObjectMapper;
 
+import okhttp3.ConnectionPool;
 import okhttp3.Dispatcher;
 import okhttp3.Headers;
 import okhttp3.MediaType;
@@ -38,44 +41,61 @@ import java.util.Map;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.SynchronousQueue;
+import java.util.concurrent.TimeUnit;
 
 import static okhttp3.ConnectionSpec.CLEARTEXT;
 import static okhttp3.ConnectionSpec.COMPATIBLE_TLS;
 import static okhttp3.ConnectionSpec.MODERN_TLS;
+import static org.apache.paimon.rest.RESTObjectMapper.OBJECT_MAPPER;
 import static org.apache.paimon.utils.ThreadPoolUtils.createCachedThreadPool;
 
 /** HTTP client for REST catalog. */
 public class HttpClient implements RESTClient {
 
-    private final OkHttpClient okHttpClient;
-    private final String uri;
-    private final ObjectMapper mapper;
-    private final ErrorHandler errorHandler;
-
     private static final String THREAD_NAME = "REST-CATALOG-HTTP-CLIENT-THREAD-POOL";
     private static final MediaType MEDIA_TYPE = MediaType.parse("application/json");
+    private static final int CONNECTION_KEEP_ALIVE_DURATION_MS = 300_000;
+
+    private final OkHttpClient okHttpClient;
+    private final String uri;
+
+    private ErrorHandler errorHandler;
+
+    public HttpClient(Options options) {
+        this(HttpClientOptions.create(options));
+    }
 
     public HttpClient(HttpClientOptions httpClientOptions) {
-        this.uri = httpClientOptions.uri();
-        this.mapper = httpClientOptions.mapper();
+        if (httpClientOptions.uri() != null && httpClientOptions.uri().endsWith("/")) {
+            this.uri = httpClientOptions.uri().substring(0, httpClientOptions.uri().length() - 1);
+        } else {
+            this.uri = httpClientOptions.uri();
+        }
         this.okHttpClient = createHttpClient(httpClientOptions);
-        this.errorHandler = httpClientOptions.errorHandler();
+        this.errorHandler = DefaultErrorHandler.getInstance();
+    }
+
+    @VisibleForTesting
+    void setErrorHandler(ErrorHandler errorHandler) {
+        this.errorHandler = errorHandler;
     }
 
     @Override
     public <T extends RESTResponse> T get(
             String path, Class<T> responseType, Map<String, String> headers) {
-        try {
-            Request request =
-                    new Request.Builder()
-                            .url(uri + path)
-                            .get()
-                            .headers(Headers.of(headers))
-                            .build();
-            return exec(request, responseType);
-        } catch (Exception e) {
-            throw new RuntimeException(e);
-        }
+        Request request =
+                new Request.Builder()
+                        .url(getRequestUrl(path))
+                        .get()
+                        .headers(Headers.of(headers))
+                        .build();
+        return exec(request, responseType);
+    }
+
+    @Override
+    public <T extends RESTResponse> T post(
+            String path, RESTRequest body, Map<String, String> headers) {
+        return post(path, body, null, headers);
     }
 
     @Override
@@ -85,13 +105,41 @@ public class HttpClient implements RESTClient {
             RequestBody requestBody = buildRequestBody(body);
             Request request =
                     new Request.Builder()
-                            .url(uri + path)
+                            .url(getRequestUrl(path))
                             .post(requestBody)
                             .headers(Headers.of(headers))
                             .build();
             return exec(request, responseType);
-        } catch (Exception e) {
-            throw new RuntimeException(e);
+        } catch (JsonProcessingException e) {
+            throw new RESTException(e, "build request failed.");
+        }
+    }
+
+    @Override
+    public <T extends RESTResponse> T delete(String path, Map<String, String> headers) {
+        Request request =
+                new Request.Builder()
+                        .url(getRequestUrl(path))
+                        .delete()
+                        .headers(Headers.of(headers))
+                        .build();
+        return exec(request, null);
+    }
+
+    @Override
+    public <T extends RESTResponse> T delete(
+            String path, RESTRequest body, Map<String, String> headers) {
+        try {
+            RequestBody requestBody = buildRequestBody(body);
+            Request request =
+                    new Request.Builder()
+                            .url(getRequestUrl(path))
+                            .delete(requestBody)
+                            .headers(Headers.of(headers))
+                            .build();
+            return exec(request, null);
+        } catch (JsonProcessingException e) {
+            throw new RESTException(e, "build request failed.");
         }
     }
 
@@ -105,37 +153,71 @@ public class HttpClient implements RESTClient {
         try (Response response = okHttpClient.newCall(request).execute()) {
             String responseBodyStr = response.body() != null ? response.body().string() : null;
             if (!response.isSuccessful()) {
-                ErrorResponse error =
-                        new ErrorResponse(
-                                responseBodyStr != null ? responseBodyStr : "response body is null",
-                                response.code());
+                ErrorResponse error;
+                try {
+                    error = OBJECT_MAPPER.readValue(responseBodyStr, ErrorResponse.class);
+                } catch (JsonProcessingException e) {
+                    error =
+                            new ErrorResponse(
+                                    null,
+                                    null,
+                                    responseBodyStr != null
+                                            ? responseBodyStr
+                                            : "response body is null",
+                                    response.code());
+                }
                 errorHandler.accept(error);
             }
-            if (responseBodyStr == null) {
+            if (responseType != null && responseBodyStr != null) {
+                return OBJECT_MAPPER.readValue(responseBodyStr, responseType);
+            } else if (responseType == null) {
+                return null;
+            } else {
                 throw new RESTException("response body is null.");
             }
-            return mapper.readValue(responseBodyStr, responseType);
+        } catch (RESTException e) {
+            throw e;
         } catch (Exception e) {
             throw new RESTException(e, "rest exception");
         }
     }
 
     private RequestBody buildRequestBody(RESTRequest body) throws JsonProcessingException {
-        return RequestBody.create(mapper.writeValueAsBytes(body), MEDIA_TYPE);
+        return RequestBody.create(OBJECT_MAPPER.writeValueAsBytes(body), MEDIA_TYPE);
+    }
+
+    private String getRequestUrl(String path) {
+        return StringUtils.isNullOrWhitespaceOnly(path) ? uri : uri + path;
     }
 
     private static OkHttpClient createHttpClient(HttpClientOptions httpClientOptions) {
         BlockingQueue<Runnable> workQueue = new SynchronousQueue<>();
         ExecutorService executorService =
                 createCachedThreadPool(httpClientOptions.threadPoolSize(), THREAD_NAME, workQueue);
-
+        ConnectionPool connectionPool =
+                new ConnectionPool(
+                        httpClientOptions.maxConnections(),
+                        CONNECTION_KEEP_ALIVE_DURATION_MS,
+                        TimeUnit.MILLISECONDS);
+        Dispatcher dispatcher = new Dispatcher(executorService);
+        // set max requests per host use max connections
+        dispatcher.setMaxRequestsPerHost(httpClientOptions.maxConnections());
         OkHttpClient.Builder builder =
                 new OkHttpClient.Builder()
-                        .dispatcher(new Dispatcher(executorService))
+                        .dispatcher(dispatcher)
                         .retryOnConnectionFailure(true)
-                        .connectionSpecs(Arrays.asList(MODERN_TLS, COMPATIBLE_TLS, CLEARTEXT));
-        httpClientOptions.connectTimeout().ifPresent(builder::connectTimeout);
-        httpClientOptions.readTimeout().ifPresent(builder::readTimeout);
+                        .connectionPool(connectionPool)
+                        .connectionSpecs(Arrays.asList(MODERN_TLS, COMPATIBLE_TLS, CLEARTEXT))
+                        .addInterceptor(
+                                new ExponentialHttpRetryInterceptor(
+                                        httpClientOptions.maxRetries()));
+        httpClientOptions
+                .connectTimeout()
+                .ifPresent(
+                        timeoutDuration -> {
+                            builder.connectTimeout(timeoutDuration);
+                            builder.readTimeout(timeoutDuration);
+                        });
 
         return builder.build();
     }

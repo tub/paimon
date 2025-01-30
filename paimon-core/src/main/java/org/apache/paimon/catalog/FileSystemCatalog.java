@@ -32,9 +32,10 @@ import org.slf4j.LoggerFactory;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.Callable;
 
-import static org.apache.paimon.catalog.FileSystemCatalogOptions.CASE_SENSITIVE;
+import static org.apache.paimon.options.CatalogOptions.CASE_SENSITIVE;
 
 /** A catalog implementation for {@link FileIO}. */
 public class FileSystemCatalog extends AbstractCatalog {
@@ -93,12 +94,17 @@ public class FileSystemCatalog extends AbstractCatalog {
     }
 
     @Override
+    protected void alterDatabaseImpl(String name, List<PropertyChange> changes) {
+        throw new UnsupportedOperationException("Alter database is not supported.");
+    }
+
+    @Override
     protected List<String> listTablesImpl(String databaseName) {
         return uncheck(() -> listTablesInFileSystem(newDatabasePath(databaseName)));
     }
 
     @Override
-    public TableSchema getDataTableSchema(Identifier identifier) throws TableNotExistException {
+    public TableSchema loadTableSchema(Identifier identifier) throws TableNotExistException {
         return tableSchemaInFileSystem(
                         getTableLocation(identifier), identifier.getBranchNameOrDefault())
                 .orElseThrow(() -> new TableNotExistException(identifier));
@@ -112,20 +118,30 @@ public class FileSystemCatalog extends AbstractCatalog {
 
     @Override
     public void createTableImpl(Identifier identifier, Schema schema) {
-        uncheck(() -> schemaManager(identifier).createTable(schema));
+        SchemaManager schemaManager = schemaManager(identifier);
+        try {
+            runWithLock(identifier, () -> uncheck(() -> schemaManager.createTable(schema)));
+        } catch (RuntimeException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    public <T> T runWithLock(Identifier identifier, Callable<T> callable) throws Exception {
+        Optional<CatalogLockFactory> lockFactory = lockFactory();
+        try (Lock lock =
+                lockFactory
+                        .map(factory -> factory.createLock(lockContext().orElse(null)))
+                        .map(l -> Lock.fromCatalog(l, identifier))
+                        .orElseGet(Lock::empty)) {
+            return lock.runWithLock(callable);
+        }
     }
 
     private SchemaManager schemaManager(Identifier identifier) {
         Path path = getTableLocation(identifier);
-        CatalogLock catalogLock =
-                lockFactory().map(fac -> fac.createLock(assertGetLockContext())).orElse(null);
-        return new SchemaManager(fileIO, path, identifier.getBranchNameOrDefault())
-                .withLock(catalogLock == null ? null : Lock.fromCatalog(catalogLock, identifier));
-    }
-
-    private CatalogLockContext assertGetLockContext() {
-        return lockContext()
-                .orElseThrow(() -> new RuntimeException("No lock context when lock is enabled."));
+        return new SchemaManager(fileIO, path, identifier.getBranchNameOrDefault());
     }
 
     @Override
@@ -138,7 +154,17 @@ public class FileSystemCatalog extends AbstractCatalog {
     @Override
     protected void alterTableImpl(Identifier identifier, List<SchemaChange> changes)
             throws TableNotExistException, ColumnAlreadyExistException, ColumnNotExistException {
-        schemaManager(identifier).commitChanges(changes);
+        SchemaManager schemaManager = schemaManager(identifier);
+        try {
+            runWithLock(identifier, () -> schemaManager.commitChanges(changes));
+        } catch (TableNotExistException
+                | ColumnAlreadyExistException
+                | ColumnNotExistException
+                | RuntimeException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
     }
 
     protected static <T> T uncheck(Callable<T> callable) {
@@ -158,7 +184,12 @@ public class FileSystemCatalog extends AbstractCatalog {
     }
 
     @Override
-    public boolean allowUpperCase() {
-        return catalogOptions.get(CASE_SENSITIVE);
+    public CatalogLoader catalogLoader() {
+        return new FileSystemCatalogLoader(fileIO, warehouse, catalogOptions);
+    }
+
+    @Override
+    public boolean caseSensitive() {
+        return catalogOptions.getOptional(CASE_SENSITIVE).orElse(true);
     }
 }

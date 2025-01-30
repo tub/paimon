@@ -19,11 +19,12 @@
 package org.apache.paimon.operation;
 
 import org.apache.paimon.annotation.VisibleForTesting;
+import org.apache.paimon.catalog.Catalog;
 import org.apache.paimon.data.BinaryRow;
 import org.apache.paimon.manifest.PartitionEntry;
-import org.apache.paimon.metastore.MetastoreClient;
 import org.apache.paimon.partition.PartitionExpireStrategy;
 import org.apache.paimon.partition.PartitionValuesTimeExpireStrategy;
+import org.apache.paimon.table.PartitionHandler;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -34,7 +35,6 @@ import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Collection;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
@@ -50,11 +50,11 @@ public class PartitionExpire {
     private final Duration checkInterval;
     private final FileStoreScan scan;
     private final FileStoreCommit commit;
-    private final MetastoreClient metastoreClient;
+    @Nullable private final PartitionHandler partitionHandler;
     private LocalDateTime lastCheck;
     private final PartitionExpireStrategy strategy;
     private final boolean endInputCheckPartitionExpire;
-    private int maxExpires;
+    private int maxExpireNum;
 
     public PartitionExpire(
             Duration expirationTime,
@@ -62,17 +62,18 @@ public class PartitionExpire {
             PartitionExpireStrategy strategy,
             FileStoreScan scan,
             FileStoreCommit commit,
-            @Nullable MetastoreClient metastoreClient,
-            boolean endInputCheckPartitionExpire) {
+            @Nullable PartitionHandler partitionHandler,
+            boolean endInputCheckPartitionExpire,
+            int maxExpireNum) {
         this.expirationTime = expirationTime;
         this.checkInterval = checkInterval;
         this.strategy = strategy;
         this.scan = scan;
         this.commit = commit;
-        this.metastoreClient = metastoreClient;
+        this.partitionHandler = partitionHandler;
         this.lastCheck = LocalDateTime.now();
         this.endInputCheckPartitionExpire = endInputCheckPartitionExpire;
-        this.maxExpires = Integer.MAX_VALUE;
+        this.maxExpireNum = maxExpireNum;
     }
 
     public PartitionExpire(
@@ -81,17 +82,21 @@ public class PartitionExpire {
             PartitionExpireStrategy strategy,
             FileStoreScan scan,
             FileStoreCommit commit,
-            @Nullable MetastoreClient metastoreClient) {
-        this(expirationTime, checkInterval, strategy, scan, commit, metastoreClient, false);
+            @Nullable PartitionHandler partitionHandler,
+            int maxExpireNum) {
+        this(
+                expirationTime,
+                checkInterval,
+                strategy,
+                scan,
+                commit,
+                partitionHandler,
+                false,
+                maxExpireNum);
     }
 
-    public PartitionExpire withLock(Lock lock) {
-        this.commit.withLock(lock);
-        return this;
-    }
-
-    public PartitionExpire withMaxExpires(int maxExpires) {
-        this.maxExpires = maxExpires;
+    public PartitionExpire withMaxExpireNum(int maxExpireNum) {
+        this.maxExpireNum = maxExpireNum;
         return this;
     }
 
@@ -145,27 +150,20 @@ public class PartitionExpire {
 
         List<Map<String, String>> expired = new ArrayList<>();
         if (!expiredPartValues.isEmpty()) {
+            // convert partition value to partition string, and limit the partition num
             expired = convertToPartitionString(expiredPartValues);
             LOG.info("Expire Partitions: {}", expired);
-            if (metastoreClient != null) {
-                deleteMetastorePartitions(expired);
+            if (partitionHandler != null) {
+                try {
+                    partitionHandler.dropPartitions(expired);
+                } catch (Catalog.TableNotExistException e) {
+                    throw new RuntimeException(e);
+                }
+            } else {
+                commit.dropPartitions(expired, commitIdentifier);
             }
-            commit.dropPartitions(expired, commitIdentifier);
         }
         return expired;
-    }
-
-    private void deleteMetastorePartitions(List<Map<String, String>> partitions) {
-        if (metastoreClient != null) {
-            partitions.forEach(
-                    partition -> {
-                        try {
-                            metastoreClient.deletePartition(new LinkedHashMap<>(partition));
-                        } catch (Exception e) {
-                            throw new RuntimeException(e);
-                        }
-                    });
-        }
     }
 
     private List<Map<String, String>> convertToPartitionString(
@@ -175,7 +173,7 @@ public class PartitionExpire {
                 .sorted()
                 .map(s -> s.split(DELIMITER))
                 .map(strategy::toPartitionString)
-                .limit(Math.min(expiredPartValues.size(), maxExpires))
+                .limit(Math.min(expiredPartValues.size(), maxExpireNum))
                 .collect(Collectors.toList());
     }
 }

@@ -19,7 +19,7 @@
 package org.apache.paimon.operation;
 
 import org.apache.paimon.Snapshot;
-import org.apache.paimon.catalog.Catalog;
+import org.apache.paimon.data.Timestamp;
 import org.apache.paimon.fs.FileIO;
 import org.apache.paimon.fs.FileStatus;
 import org.apache.paimon.fs.Path;
@@ -32,9 +32,11 @@ import org.apache.paimon.schema.SchemaManager;
 import org.apache.paimon.table.FileStoreTable;
 import org.apache.paimon.utils.BranchManager;
 import org.apache.paimon.utils.DateTimeUtils;
+import org.apache.paimon.utils.FileStorePathFactory;
 import org.apache.paimon.utils.Pair;
-import org.apache.paimon.utils.SerializableConsumer;
+import org.apache.paimon.utils.Preconditions;
 import org.apache.paimon.utils.SnapshotManager;
+import org.apache.paimon.utils.SupplierWithIOException;
 import org.apache.paimon.utils.TagManager;
 
 import org.slf4j.Logger;
@@ -55,6 +57,7 @@ import java.util.TimeZone;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 import java.util.function.Predicate;
+import java.util.stream.Collectors;
 
 import static java.util.Collections.emptyList;
 import static org.apache.paimon.utils.FileStorePathFactory.BUCKET_PATH_PREFIX;
@@ -85,18 +88,17 @@ public abstract class OrphanFilesClean implements Serializable {
     protected final FileStoreTable table;
     protected final FileIO fileIO;
     protected final long olderThanMillis;
-    protected final SerializableConsumer<Path> fileCleaner;
+    protected final boolean dryRun;
     protected final int partitionKeysNum;
     protected final Path location;
 
-    public OrphanFilesClean(
-            FileStoreTable table, long olderThanMillis, SerializableConsumer<Path> fileCleaner) {
+    public OrphanFilesClean(FileStoreTable table, long olderThanMillis, boolean dryRun) {
         this.table = table;
         this.fileIO = table.fileIO();
         this.partitionKeysNum = table.partitionKeys().size();
         this.location = table.location();
         this.olderThanMillis = olderThanMillis;
-        this.fileCleaner = fileCleaner;
+        this.dryRun = dryRun;
     }
 
     protected List<String> validBranches() {
@@ -158,7 +160,20 @@ public abstract class OrphanFilesClean implements Serializable {
         Long fileSize = deleteFileInfo.getRight();
         deletedFilesConsumer.accept(filePath);
         deletedFilesLenInBytesConsumer.accept(fileSize);
-        fileCleaner.accept(filePath);
+        cleanFile(filePath);
+    }
+
+    protected void cleanFile(Path path) {
+        if (!dryRun) {
+            try {
+                if (fileIO.isDir(path)) {
+                    fileIO.deleteDirectoryQuietly(path);
+                } else {
+                    fileIO.deleteQuietly(path);
+                }
+            } catch (IOException ignored) {
+            }
+        }
     }
 
     protected Set<Snapshot> safelyGetAllSnapshots(String branch) throws IOException {
@@ -249,13 +264,23 @@ public abstract class OrphanFilesClean implements Serializable {
 
     /** List directories that contains data files and manifest files. */
     protected List<Path> listPaimonFileDirs() {
+        FileStorePathFactory pathFactory = table.store().pathFactory();
+
         List<Path> paimonFileDirs = new ArrayList<>();
 
-        paimonFileDirs.add(new Path(location, "manifest"));
-        paimonFileDirs.add(new Path(location, "index"));
-        paimonFileDirs.add(new Path(location, "statistics"));
-        paimonFileDirs.addAll(listFileDirs(location, partitionKeysNum));
+        paimonFileDirs.add(pathFactory.manifestPath());
+        paimonFileDirs.add(pathFactory.indexPath());
+        paimonFileDirs.add(pathFactory.statisticsPath());
+        paimonFileDirs.addAll(listFileDirs(pathFactory.dataFilePath(), partitionKeysNum));
 
+        // add external data paths
+        String dataFileExternalPaths = table.store().options().dataFileExternalPaths();
+        if (dataFileExternalPaths != null) {
+            String[] externalPathArr = dataFileExternalPaths.split(",");
+            for (String externalPath : externalPathArr) {
+                paimonFileDirs.addAll(listFileDirs(new Path(externalPath), partitionKeysNum));
+            }
+        }
         return paimonFileDirs;
     }
 
@@ -320,13 +345,13 @@ public abstract class OrphanFilesClean implements Serializable {
      * {@link FileNotFoundException}, return default value. Finally, if retry times reaches the
      * limits, rethrow the IOException.
      */
-    protected static <T> T retryReadingFiles(ReaderWithIOException<T> reader, T defaultValue)
+    protected static <T> T retryReadingFiles(SupplierWithIOException<T> reader, T defaultValue)
             throws IOException {
         int retryNumber = 0;
         IOException caught = null;
         while (retryNumber++ < READ_FILE_RETRY_NUM) {
             try {
-                return reader.read();
+                return reader.get();
             } catch (FileNotFoundException e) {
                 return defaultValue;
             } catch (IOException e) {
@@ -347,39 +372,48 @@ public abstract class OrphanFilesClean implements Serializable {
         return status.getModificationTime() < olderThanMillis;
     }
 
-    /** A helper functional interface for method {@link #retryReadingFiles}. */
-    @FunctionalInterface
-    protected interface ReaderWithIOException<T> {
-
-        T read() throws IOException;
-    }
-
-    public static SerializableConsumer<Path> createFileCleaner(
-            Catalog catalog, @Nullable Boolean dryRun) {
-        SerializableConsumer<Path> fileCleaner;
-        if (Boolean.TRUE.equals(dryRun)) {
-            fileCleaner = path -> {};
-        } else {
-            FileIO fileIO = catalog.fileIO();
-            fileCleaner =
-                    path -> {
-                        try {
-                            if (fileIO.isDir(path)) {
-                                fileIO.deleteDirectoryQuietly(path);
-                            } else {
-                                fileIO.deleteQuietly(path);
-                            }
-                        } catch (IOException ignored) {
-                        }
-                    };
-        }
-        return fileCleaner;
-    }
-
     public static long olderThanMillis(@Nullable String olderThan) {
-        return isNullOrWhitespaceOnly(olderThan)
-                ? System.currentTimeMillis() - TimeUnit.DAYS.toMillis(1)
-                : DateTimeUtils.parseTimestampData(olderThan, 3, TimeZone.getDefault())
-                        .getMillisecond();
+        if (isNullOrWhitespaceOnly(olderThan)) {
+            return System.currentTimeMillis() - TimeUnit.DAYS.toMillis(1);
+        } else {
+            Timestamp parsedTimestampData =
+                    DateTimeUtils.parseTimestampData(olderThan, 3, TimeZone.getDefault());
+            Preconditions.checkArgument(
+                    parsedTimestampData.compareTo(
+                                    Timestamp.fromEpochMillis(System.currentTimeMillis()))
+                            < 0,
+                    "The arg olderThan must be less than now, because dataFiles that are currently being written and not referenced by snapshots will be mistakenly cleaned up.");
+
+            return parsedTimestampData.getMillisecond();
+        }
+    }
+
+    /** Try to clean empty data directories. */
+    protected void tryCleanDataDirectory(Set<Path> dataDirs, int maxLevel) {
+        for (int level = 0; level < maxLevel; level++) {
+            dataDirs =
+                    dataDirs.stream()
+                            .filter(this::tryDeleteEmptyDirectory)
+                            .map(Path::getParent)
+                            .collect(Collectors.toSet());
+        }
+    }
+
+    public boolean tryDeleteEmptyDirectory(Path path) {
+        if (dryRun) {
+            return false;
+        }
+
+        try {
+            return fileIO.delete(path, false);
+        } catch (IOException e) {
+            return false;
+        }
+    }
+
+    /** Cleaner to clean files. */
+    public interface FileCleaner extends Serializable {
+
+        void clean(String table, Path path);
     }
 }

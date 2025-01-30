@@ -25,29 +25,62 @@ import java.time.Duration;
 
 /** Options for REST Catalog. */
 public class RESTCatalogOptions {
+
     public static final ConfigOption<String> URI =
             ConfigOptions.key("uri")
                     .stringType()
                     .noDefaultValue()
                     .withDescription("REST Catalog server's uri.");
-    public static final ConfigOption<String> TOKEN =
-            ConfigOptions.key("token")
-                    .stringType()
-                    .noDefaultValue()
-                    .withDescription("REST Catalog server's auth token.");
+
     public static final ConfigOption<Duration> CONNECTION_TIMEOUT =
             ConfigOptions.key("rest.client.connection-timeout")
                     .durationType()
-                    .noDefaultValue()
+                    .defaultValue(Duration.ofSeconds(180))
                     .withDescription("REST Catalog http client connect timeout.");
-    public static final ConfigOption<Duration> READ_TIMEOUT =
-            ConfigOptions.key("rest.client.read-timeout")
-                    .durationType()
-                    .noDefaultValue()
-                    .withDescription("REST Catalog http client read timeout.");
+
+    public static final ConfigOption<Integer> MAX_CONNECTIONS =
+            ConfigOptions.key("rest.client.max-connections")
+                    .intType()
+                    .defaultValue(100)
+                    .withDescription("REST Catalog http client's max connections.");
+
+    public static final ConfigOption<Integer> MAX_RETIES =
+            ConfigOptions.key("rest.client.max-retries")
+                    .intType()
+                    .defaultValue(5)
+                    .withDescription("REST Catalog http client's max retry times.");
+
     public static final ConfigOption<Integer> THREAD_POOL_SIZE =
             ConfigOptions.key("rest.client.num-threads")
                     .intType()
                     .defaultValue(1)
                     .withDescription("REST Catalog http client thread num.");
+
+    public static final ConfigOption<String> TOKEN =
+            ConfigOptions.key("token")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription("REST Catalog auth token.");
+
+    public static final ConfigOption<Duration> TOKEN_EXPIRATION_TIME =
+            ConfigOptions.key("token.expiration-time")
+                    .durationType()
+                    .defaultValue(Duration.ofHours(1))
+                    .withDescription(
+                            "REST Catalog auth token expires time.The token generates system refresh frequency is t1,"
+                                    + " the token expires time is t2, we need to guarantee that t2 > t1,"
+                                    + " the token validity time is [t2 - t1, t2],"
+                                    + " and the expires time defined here needs to be less than (t2 - t1)");
+
+    public static final ConfigOption<String> TOKEN_PROVIDER_PATH =
+            ConfigOptions.key("token.provider.path")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription("REST Catalog auth token provider path.");
+
+    public static final ConfigOption<Boolean> DATA_TOKEN_ENABLED =
+            ConfigOptions.key("data-token.enabled")
+                    .booleanType()
+                    .defaultValue(false)
+                    .withDescription("Whether to support data token provided by the REST server.");
 }

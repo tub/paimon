@@ -18,12 +18,16 @@
 
 package org.apache.paimon.privilege;
 
+import org.apache.paimon.catalog.AbstractCatalog;
 import org.apache.paimon.catalog.Catalog;
+import org.apache.paimon.catalog.CatalogLoader;
 import org.apache.paimon.catalog.DelegateCatalog;
 import org.apache.paimon.catalog.Identifier;
+import org.apache.paimon.catalog.PropertyChange;
 import org.apache.paimon.options.ConfigOption;
 import org.apache.paimon.options.ConfigOptions;
 import org.apache.paimon.options.Options;
+import org.apache.paimon.partition.Partition;
 import org.apache.paimon.schema.Schema;
 import org.apache.paimon.schema.SchemaChange;
 import org.apache.paimon.table.FileStoreTable;
@@ -44,27 +48,41 @@ public class PrivilegedCatalog extends DelegateCatalog {
                     .defaultValue(PrivilegeManager.PASSWORD_ANONYMOUS);
 
     private final PrivilegeManager privilegeManager;
+    private final PrivilegeManagerLoader privilegeManagerLoader;
 
-    public PrivilegedCatalog(Catalog wrapped, PrivilegeManager privilegeManager) {
+    public PrivilegedCatalog(Catalog wrapped, PrivilegeManagerLoader privilegeManagerLoader) {
         super(wrapped);
-        this.privilegeManager = privilegeManager;
+        this.privilegeManager = privilegeManagerLoader.load();
+        this.privilegeManagerLoader = privilegeManagerLoader;
     }
 
     public static Catalog tryToCreate(Catalog catalog, Options options) {
-        PrivilegeManager privilegeManager =
-                new FileBasedPrivilegeManager(
-                        catalog.warehouse(),
-                        catalog.fileIO(),
+        if (!(rootCatalog(catalog) instanceof AbstractCatalog)) {
+            return catalog;
+        }
+
+        FileBasedPrivilegeManagerLoader fileBasedPrivilegeManagerLoader =
+                new FileBasedPrivilegeManagerLoader(
+                        ((AbstractCatalog) rootCatalog(catalog)).warehouse(),
+                        ((AbstractCatalog) rootCatalog(catalog)).fileIO(),
                         options.get(PrivilegedCatalog.USER),
                         options.get(PrivilegedCatalog.PASSWORD));
-        if (privilegeManager.privilegeEnabled()) {
-            catalog = new PrivilegedCatalog(catalog, privilegeManager);
+        FileBasedPrivilegeManager fileBasedPrivilegeManager =
+                fileBasedPrivilegeManagerLoader.load();
+
+        if (fileBasedPrivilegeManager.privilegeEnabled()) {
+            catalog = new PrivilegedCatalog(catalog, fileBasedPrivilegeManagerLoader);
         }
         return catalog;
     }
 
     public PrivilegeManager privilegeManager() {
         return privilegeManager;
+    }
+
+    @Override
+    public CatalogLoader catalogLoader() {
+        return new PrivilegedCatalogLoader(wrapped.catalogLoader(), privilegeManagerLoader);
     }
 
     @Override
@@ -80,6 +98,13 @@ public class PrivilegedCatalog extends DelegateCatalog {
         privilegeManager.getPrivilegeChecker().assertCanDropDatabase(name);
         wrapped.dropDatabase(name, ignoreIfNotExists, cascade);
         privilegeManager.objectDropped(name);
+    }
+
+    @Override
+    public void alterDatabase(String name, List<PropertyChange> changes, boolean ignoreIfNotExists)
+            throws DatabaseNotExistException {
+        privilegeManager.getPrivilegeChecker().assertCanAlterDatabase(name);
+        super.alterDatabase(name, changes, ignoreIfNotExists);
     }
 
     @Override
@@ -135,10 +160,31 @@ public class PrivilegedCatalog extends DelegateCatalog {
     }
 
     @Override
-    public void dropPartition(Identifier identifier, Map<String, String> partitions)
-            throws TableNotExistException, PartitionNotExistException {
+    public void createPartitions(Identifier identifier, List<Map<String, String>> partitions)
+            throws TableNotExistException {
         privilegeManager.getPrivilegeChecker().assertCanInsert(identifier);
-        wrapped.dropPartition(identifier, partitions);
+        wrapped.createPartitions(identifier, partitions);
+    }
+
+    @Override
+    public void dropPartitions(Identifier identifier, List<Map<String, String>> partitions)
+            throws TableNotExistException {
+        privilegeManager.getPrivilegeChecker().assertCanInsert(identifier);
+        wrapped.dropPartitions(identifier, partitions);
+    }
+
+    @Override
+    public void alterPartitions(Identifier identifier, List<Partition> partitions)
+            throws TableNotExistException {
+        privilegeManager.getPrivilegeChecker().assertCanInsert(identifier);
+        wrapped.alterPartitions(identifier, partitions);
+    }
+
+    @Override
+    public void markDonePartitions(Identifier identifier, List<Map<String, String>> partitions)
+            throws TableNotExistException {
+        privilegeManager.getPrivilegeChecker().assertCanInsert(identifier);
+        wrapped.markDonePartitions(identifier, partitions);
     }
 
     public void createPrivilegedUser(String user, String password) {

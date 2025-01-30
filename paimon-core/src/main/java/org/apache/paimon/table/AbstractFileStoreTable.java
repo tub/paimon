@@ -29,7 +29,6 @@ import org.apache.paimon.manifest.ManifestEntry;
 import org.apache.paimon.manifest.ManifestFileMeta;
 import org.apache.paimon.metastore.AddPartitionCommitCallback;
 import org.apache.paimon.metastore.AddPartitionTagCallback;
-import org.apache.paimon.metastore.MetastoreClient;
 import org.apache.paimon.metastore.TagPreviewCommitCallback;
 import org.apache.paimon.operation.DefaultValueAssigner;
 import org.apache.paimon.operation.FileStoreScan;
@@ -61,6 +60,7 @@ import org.apache.paimon.table.source.snapshot.StaticFromWatermarkStartingScanne
 import org.apache.paimon.table.source.snapshot.TimeTravelUtil;
 import org.apache.paimon.tag.TagPreview;
 import org.apache.paimon.utils.BranchManager;
+import org.apache.paimon.utils.InternalRowPartitionComputer;
 import org.apache.paimon.utils.Preconditions;
 import org.apache.paimon.utils.SegmentsCache;
 import org.apache.paimon.utils.SimpleFileReader;
@@ -451,7 +451,6 @@ abstract class AbstractFileStoreTable implements FileStoreTable {
                 snapshotExpire,
                 options.writeOnly() ? null : store().newPartitionExpire(commitUser),
                 options.writeOnly() ? null : store().newTagCreationManager(),
-                catalogEnvironment.lockFactory().create(),
                 CoreOptions.fromMap(options()).consumerExpireTime(),
                 new ConsumerManager(fileIO, path, snapshotManager().branch()),
                 options.snapshotExpireExecutionMode(),
@@ -463,26 +462,33 @@ abstract class AbstractFileStoreTable implements FileStoreTable {
         List<CommitCallback> callbacks =
                 new ArrayList<>(CallbackUtils.loadCommitCallbacks(coreOptions()));
         CoreOptions options = coreOptions();
-        MetastoreClient.Factory metastoreClientFactory =
-                catalogEnvironment.metastoreClientFactory();
 
-        if (options.partitionedTableInMetastore()
-                && metastoreClientFactory != null
-                && !tableSchema.partitionKeys().isEmpty()) {
-            callbacks.add(new AddPartitionCommitCallback(metastoreClientFactory.create()));
+        if (options.partitionedTableInMetastore() && !tableSchema.partitionKeys().isEmpty()) {
+            PartitionHandler partitionHandler = catalogEnvironment.partitionHandler();
+            if (partitionHandler != null) {
+                InternalRowPartitionComputer partitionComputer =
+                        new InternalRowPartitionComputer(
+                                options.partitionDefaultName(),
+                                tableSchema.logicalPartitionType(),
+                                tableSchema.partitionKeys().toArray(new String[0]),
+                                options.legacyPartitionName());
+                callbacks.add(new AddPartitionCommitCallback(partitionHandler, partitionComputer));
+            }
         }
 
         TagPreview tagPreview = TagPreview.create(options);
         if (options.tagToPartitionField() != null
                 && tagPreview != null
-                && metastoreClientFactory != null
                 && tableSchema.partitionKeys().isEmpty()) {
-            TagPreviewCommitCallback callback =
-                    new TagPreviewCommitCallback(
-                            new AddPartitionTagCallback(
-                                    metastoreClientFactory.create(), options.tagToPartitionField()),
-                            tagPreview);
-            callbacks.add(callback);
+            PartitionHandler partitionHandler = catalogEnvironment.partitionHandler();
+            if (partitionHandler != null) {
+                TagPreviewCommitCallback callback =
+                        new TagPreviewCommitCallback(
+                                new AddPartitionTagCallback(
+                                        partitionHandler, options.tagToPartitionField()),
+                                tagPreview);
+                callbacks.add(callback);
+            }
         }
 
         return callbacks;
@@ -532,7 +538,7 @@ abstract class AbstractFileStoreTable implements FileStoreTable {
     }
 
     private Optional<TableSchema> travelToTag(String tagName, Options options) {
-        return travelToSnapshot(tagManager().taggedSnapshot(tagName), options);
+        return travelToSnapshot(tagManager().getOrThrow(tagName).trimToSnapshot(), options);
     }
 
     private Optional<TableSchema> travelToSnapshot(long snapshotId, Options options) {
@@ -624,7 +630,9 @@ abstract class AbstractFileStoreTable implements FileStoreTable {
     }
 
     private void createTag(String tagName, Snapshot fromSnapshot, @Nullable Duration timeRetained) {
-        tagManager().createTag(fromSnapshot, tagName, timeRetained, store().createTagCallbacks());
+        tagManager()
+                .createTag(
+                        fromSnapshot, tagName, timeRetained, store().createTagCallbacks(), false);
     }
 
     @Override
@@ -680,7 +688,7 @@ abstract class AbstractFileStoreTable implements FileStoreTable {
         TagManager tagManager = tagManager();
         checkArgument(tagManager.tagExists(tagName), "Rollback tag '%s' doesn't exist.", tagName);
 
-        Snapshot taggedSnapshot = tagManager.taggedSnapshot(tagName);
+        Snapshot taggedSnapshot = tagManager.getOrThrow(tagName).trimToSnapshot();
         rollbackHelper().cleanLargerThan(taggedSnapshot);
 
         try {

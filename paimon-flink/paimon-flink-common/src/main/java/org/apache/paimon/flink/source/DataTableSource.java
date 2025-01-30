@@ -56,13 +56,13 @@ public class DataTableSource extends BaseDataTableSource
     public DataTableSource(
             ObjectIdentifier tableIdentifier,
             Table table,
-            boolean streaming,
+            boolean unbounded,
             DynamicTableFactory.Context context,
             @Nullable LogStoreTableFactory logStoreTableFactory) {
         this(
                 tableIdentifier,
                 table,
-                streaming,
+                unbounded,
                 context,
                 logStoreTableFactory,
                 null,
@@ -70,13 +70,13 @@ public class DataTableSource extends BaseDataTableSource
                 null,
                 null,
                 null,
-                false);
+                null);
     }
 
     public DataTableSource(
             ObjectIdentifier tableIdentifier,
             Table table,
-            boolean streaming,
+            boolean unbounded,
             DynamicTableFactory.Context context,
             @Nullable LogStoreTableFactory logStoreTableFactory,
             @Nullable Predicate predicate,
@@ -84,18 +84,18 @@ public class DataTableSource extends BaseDataTableSource
             @Nullable Long limit,
             @Nullable WatermarkStrategy<RowData> watermarkStrategy,
             @Nullable List<String> dynamicPartitionFilteringFields,
-            boolean isBatchCountStar) {
+            @Nullable Long countPushed) {
         super(
                 tableIdentifier,
                 table,
-                streaming,
+                unbounded,
                 context,
                 logStoreTableFactory,
                 predicate,
                 projectFields,
                 limit,
                 watermarkStrategy,
-                isBatchCountStar);
+                countPushed);
         this.dynamicPartitionFilteringFields = dynamicPartitionFilteringFields;
     }
 
@@ -104,7 +104,7 @@ public class DataTableSource extends BaseDataTableSource
         return new DataTableSource(
                 tableIdentifier,
                 table,
-                streaming,
+                unbounded,
                 context,
                 logStoreTableFactory,
                 predicate,
@@ -112,12 +112,12 @@ public class DataTableSource extends BaseDataTableSource
                 limit,
                 watermarkStrategy,
                 dynamicPartitionFilteringFields,
-                isBatchCountStar);
+                countPushed);
     }
 
     @Override
     public TableStats reportStatistics() {
-        if (streaming) {
+        if (unbounded) {
             return TableStats.UNKNOWN;
         }
         Optional<Statistics> optionStatistics = table.statistics();
@@ -142,13 +142,13 @@ public class DataTableSource extends BaseDataTableSource
     @Override
     public List<String> listAcceptedFilterFields() {
         // note that streaming query doesn't support dynamic filtering
-        return streaming ? Collections.emptyList() : table.partitionKeys();
+        return unbounded ? Collections.emptyList() : table.partitionKeys();
     }
 
     @Override
     public void applyDynamicFiltering(List<String> candidateFilterFields) {
         checkState(
-                !streaming,
+                !unbounded,
                 "Cannot apply dynamic filtering to Paimon table '%s' when streaming reading.",
                 table.name());
 

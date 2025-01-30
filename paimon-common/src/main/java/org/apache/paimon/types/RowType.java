@@ -24,6 +24,8 @@ import org.apache.paimon.table.SpecialFields;
 import org.apache.paimon.utils.Preconditions;
 import org.apache.paimon.utils.StringUtils;
 
+import org.apache.paimon.shade.jackson2.com.fasterxml.jackson.annotation.JsonCreator;
+import org.apache.paimon.shade.jackson2.com.fasterxml.jackson.annotation.JsonProperty;
 import org.apache.paimon.shade.jackson2.com.fasterxml.jackson.core.JsonGenerator;
 
 import java.io.IOException;
@@ -52,6 +54,8 @@ public final class RowType extends DataType {
 
     private static final long serialVersionUID = 1L;
 
+    private static final String FIELD_FIELDS = "fields";
+
     public static final String FORMAT = "ROW<%s>";
 
     private final List<DataField> fields;
@@ -67,7 +71,8 @@ public final class RowType extends DataType {
         validateFields(fields);
     }
 
-    public RowType(List<DataField> fields) {
+    @JsonCreator
+    public RowType(@JsonProperty(FIELD_FIELDS) List<DataField> fields) {
         this(true, fields);
     }
 
@@ -210,13 +215,26 @@ public final class RowType extends DataType {
             return false;
         }
         RowType rowType = (RowType) o;
-        // For nested RowTypes e.g. DataField.dataType = RowType we need to ignoreIds as they can be
-        // different
-        if (fields.size() != rowType.fields.size()) {
+        return fields.equals(rowType.fields);
+    }
+
+    @Override
+    public boolean equalsIgnoreFieldId(DataType o) {
+        if (this == o) {
+            return true;
+        }
+        if (o == null || getClass() != o.getClass()) {
             return false;
         }
-        for (int i = 0; i < fields.size(); ++i) {
-            if (!DataField.dataFieldEqualsIgnoreId(fields.get(i), rowType.fields.get(i))) {
+        if (!super.equals(o)) {
+            return false;
+        }
+        RowType other = (RowType) o;
+        if (fields.size() != other.fields.size()) {
+            return false;
+        }
+        for (int i = 0; i < fields.size(); i++) {
+            if (!fields.get(i).equalsIgnoreFieldId(other.fields.get(i))) {
                 return false;
             }
         }
@@ -236,7 +254,7 @@ public final class RowType extends DataType {
         }
         RowType rowType = (RowType) o;
         for (DataField field : fields) {
-            if (!field.isPrunedFrom(rowType.getField(field.name()))) {
+            if (!field.isPrunedFrom(rowType.getField(field.id()))) {
                 return false;
             }
         }
@@ -343,7 +361,11 @@ public final class RowType extends DataType {
     }
 
     public static Builder builder() {
-        return builder(true, new AtomicInteger(-1));
+        return builder(new AtomicInteger(-1));
+    }
+
+    public static Builder builder(AtomicInteger fieldId) {
+        return builder(true, fieldId);
     }
 
     public static Builder builder(boolean isNullable, AtomicInteger fieldId) {

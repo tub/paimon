@@ -91,7 +91,7 @@ To use this feature through `flink run`, run the following shell command.
 ```bash
 <FLINK_HOME>/bin/flink run \
     /path/to/paimon-flink-action-{{< version >}}.jar \
-    kafka_sync_table
+    kafka_sync_table \
     --warehouse <warehouse-path> \
     --database <database-name> \
     --table <table-name> \
@@ -195,13 +195,18 @@ To use this feature through `flink run`, run the following shell command.
 ```bash
 <FLINK_HOME>/bin/flink run \
     /path/to/paimon-flink-action-{{< version >}}.jar \
-    kafka_sync_database
+    kafka_sync_database \
     --warehouse <warehouse-path> \
     --database <database-name> \
+    [--table_mapping <table-name>=<paimon-table-name>] \
     [--table_prefix <paimon-table-prefix>] \
     [--table_suffix <paimon-table-suffix>] \
+    [--table_prefix_db <paimon-table-prefix-by-db>] \
+    [--table_suffix_db <paimon-table-suffix-by-db>] \
     [--including_tables <table-name|name-regular-expr>] \
     [--excluding_tables <table-name|name-regular-expr>] \
+    [--including_dbs <database-name|name-regular-expr>] \
+    [--excluding_dbs <database-name|name-regular-expr>] \
     [--type_mapping to-string] \
     [--partition_keys <partition_keys>] \
     [--primary_keys <primary-keys>] \

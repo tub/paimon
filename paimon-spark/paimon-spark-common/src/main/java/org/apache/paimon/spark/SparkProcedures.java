@@ -35,19 +35,23 @@ import org.apache.paimon.spark.procedure.MigrateFileProcedure;
 import org.apache.paimon.spark.procedure.MigrateTableProcedure;
 import org.apache.paimon.spark.procedure.Procedure;
 import org.apache.paimon.spark.procedure.ProcedureBuilder;
+import org.apache.paimon.spark.procedure.PurgeFilesProcedure;
 import org.apache.paimon.spark.procedure.RefreshObjectTableProcedure;
 import org.apache.paimon.spark.procedure.RemoveOrphanFilesProcedure;
+import org.apache.paimon.spark.procedure.RemoveUnexistingFilesProcedure;
 import org.apache.paimon.spark.procedure.RenameTagProcedure;
 import org.apache.paimon.spark.procedure.RepairProcedure;
 import org.apache.paimon.spark.procedure.ReplaceTagProcedure;
 import org.apache.paimon.spark.procedure.ResetConsumerProcedure;
 import org.apache.paimon.spark.procedure.RollbackProcedure;
 import org.apache.paimon.spark.procedure.RollbackToTimestampProcedure;
+import org.apache.paimon.spark.procedure.RollbackToWatermarkProcedure;
 
 import org.apache.paimon.shade.guava30.com.google.common.collect.ImmutableMap;
 
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.function.Supplier;
 
 /** The {@link Procedure}s including all the stored procedures. */
@@ -62,11 +66,17 @@ public class SparkProcedures {
         return builderSupplier != null ? builderSupplier.get() : null;
     }
 
+    public static Set<String> names() {
+        return BUILDERS.keySet();
+    }
+
     private static Map<String, Supplier<ProcedureBuilder>> initProcedureBuilders() {
         ImmutableMap.Builder<String, Supplier<ProcedureBuilder>> procedureBuilders =
                 ImmutableMap.builder();
         procedureBuilders.put("rollback", RollbackProcedure::builder);
         procedureBuilders.put("rollback_to_timestamp", RollbackToTimestampProcedure::builder);
+        procedureBuilders.put("rollback_to_watermark", RollbackToWatermarkProcedure::builder);
+        procedureBuilders.put("purge_files", PurgeFilesProcedure::builder);
         procedureBuilders.put("create_tag", CreateTagProcedure::builder);
         procedureBuilders.put("replace_tag", ReplaceTagProcedure::builder);
         procedureBuilders.put("rename_tag", RenameTagProcedure::builder);
@@ -81,6 +91,7 @@ public class SparkProcedures {
         procedureBuilders.put("migrate_table", MigrateTableProcedure::builder);
         procedureBuilders.put("migrate_file", MigrateFileProcedure::builder);
         procedureBuilders.put("remove_orphan_files", RemoveOrphanFilesProcedure::builder);
+        procedureBuilders.put("remove_unexisting_files", RemoveUnexistingFilesProcedure::builder);
         procedureBuilders.put("expire_snapshots", ExpireSnapshotsProcedure::builder);
         procedureBuilders.put("expire_partitions", ExpirePartitionsProcedure::builder);
         procedureBuilders.put("repair", RepairProcedure::builder);

@@ -20,7 +20,7 @@ package org.apache.paimon.flink.sink;
 
 import org.apache.paimon.CoreOptions;
 import org.apache.paimon.append.MultiTableUnawareAppendCompactionTask;
-import org.apache.paimon.catalog.Catalog;
+import org.apache.paimon.catalog.CatalogLoader;
 import org.apache.paimon.manifest.WrappedManifestCommittable;
 import org.apache.paimon.options.Options;
 
@@ -55,14 +55,14 @@ public class CombinedTableCompactorSink implements Serializable {
     private static final String WRITER_NAME = "Writer";
     private static final String GLOBAL_COMMITTER_NAME = "Global Committer";
 
-    private final Catalog.Loader catalogLoader;
+    private final CatalogLoader catalogLoader;
     private final boolean ignorePreviousFiles;
     private final boolean fullCompaction;
 
     private final Options options;
 
     public CombinedTableCompactorSink(
-            Catalog.Loader catalogLoader, Options options, boolean fullCompaction) {
+            CatalogLoader catalogLoader, Options options, boolean fullCompaction) {
         this.catalogLoader = catalogLoader;
         this.ignorePreviousFiles = false;
         this.fullCompaction = fullCompaction;
@@ -107,7 +107,7 @@ public class CombinedTableCompactorSink implements Serializable {
                         .transform(
                                 String.format("%s-%s", "Multi-Bucket-Table", WRITER_NAME),
                                 new MultiTableCommittableTypeInfo(),
-                                combinedMultiComacptionWriteOperator(
+                                combinedMultiCompactionWriteOperator(
                                         env.getCheckpointConfig(),
                                         isStreaming,
                                         fullCompaction,
@@ -176,7 +176,7 @@ public class CombinedTableCompactorSink implements Serializable {
 
     // TODO:refactor FlinkSink to adopt this sink
     protected OneInputStreamOperatorFactory<RowData, MultiTableCommittable>
-            combinedMultiComacptionWriteOperator(
+            combinedMultiCompactionWriteOperator(
                     CheckpointConfig checkpointConfig,
                     boolean isStreaming,
                     boolean fullCompaction,

@@ -18,9 +18,7 @@
 
 package org.apache.paimon.catalog;
 
-import org.apache.paimon.fs.FileIO;
-import org.apache.paimon.fs.Path;
-import org.apache.paimon.manifest.PartitionEntry;
+import org.apache.paimon.partition.Partition;
 import org.apache.paimon.schema.Schema;
 import org.apache.paimon.schema.SchemaChange;
 import org.apache.paimon.table.Table;
@@ -30,7 +28,7 @@ import java.util.List;
 import java.util.Map;
 
 /** A {@link Catalog} to delegate all operations to another {@link Catalog}. */
-public class DelegateCatalog implements Catalog {
+public abstract class DelegateCatalog implements Catalog {
 
     protected final Catalog wrapped;
 
@@ -43,23 +41,13 @@ public class DelegateCatalog implements Catalog {
     }
 
     @Override
-    public boolean allowUpperCase() {
-        return wrapped.allowUpperCase();
-    }
-
-    @Override
-    public String warehouse() {
-        return wrapped.warehouse();
+    public boolean caseSensitive() {
+        return wrapped.caseSensitive();
     }
 
     @Override
     public Map<String, String> options() {
         return wrapped.options();
-    }
-
-    @Override
-    public FileIO fileIO() {
-        return wrapped.fileIO();
     }
 
     @Override
@@ -82,6 +70,12 @@ public class DelegateCatalog implements Catalog {
     public void dropDatabase(String name, boolean ignoreIfNotExists, boolean cascade)
             throws DatabaseNotExistException, DatabaseNotEmptyException {
         wrapped.dropDatabase(name, ignoreIfNotExists, cascade);
+    }
+
+    @Override
+    public void alterDatabase(String name, List<PropertyChange> changes, boolean ignoreIfNotExists)
+            throws DatabaseNotExistException {
+        wrapped.alterDatabase(name, changes, ignoreIfNotExists);
     }
 
     @Override
@@ -112,6 +106,30 @@ public class DelegateCatalog implements Catalog {
             Identifier identifier, List<SchemaChange> changes, boolean ignoreIfNotExists)
             throws TableNotExistException, ColumnAlreadyExistException, ColumnNotExistException {
         wrapped.alterTable(identifier, changes, ignoreIfNotExists);
+    }
+
+    @Override
+    public void createPartitions(Identifier identifier, List<Map<String, String>> partitions)
+            throws TableNotExistException {
+        wrapped.createPartitions(identifier, partitions);
+    }
+
+    @Override
+    public void dropPartitions(Identifier identifier, List<Map<String, String>> partitions)
+            throws TableNotExistException {
+        wrapped.dropPartitions(identifier, partitions);
+    }
+
+    @Override
+    public void alterPartitions(Identifier identifier, List<Partition> partitions)
+            throws TableNotExistException {
+        wrapped.alterPartitions(identifier, partitions);
+    }
+
+    @Override
+    public void markDonePartitions(Identifier identifier, List<Map<String, String>> partitions)
+            throws TableNotExistException {
+        wrapped.markDonePartitions(identifier, partitions);
     }
 
     @Override
@@ -148,25 +166,7 @@ public class DelegateCatalog implements Catalog {
     }
 
     @Override
-    public Path getTableLocation(Identifier identifier) {
-        return wrapped.getTableLocation(identifier);
-    }
-
-    @Override
-    public void createPartition(Identifier identifier, Map<String, String> partitions)
-            throws TableNotExistException {
-        wrapped.createPartition(identifier, partitions);
-    }
-
-    @Override
-    public void dropPartition(Identifier identifier, Map<String, String> partitions)
-            throws TableNotExistException, PartitionNotExistException {
-        wrapped.dropPartition(identifier, partitions);
-    }
-
-    @Override
-    public List<PartitionEntry> listPartitions(Identifier identifier)
-            throws TableNotExistException {
+    public List<Partition> listPartitions(Identifier identifier) throws TableNotExistException {
         return wrapped.listPartitions(identifier);
     }
 
@@ -188,5 +188,12 @@ public class DelegateCatalog implements Catalog {
     @Override
     public void close() throws Exception {
         wrapped.close();
+    }
+
+    public static Catalog rootCatalog(Catalog catalog) {
+        while (catalog instanceof DelegateCatalog) {
+            catalog = ((DelegateCatalog) catalog).wrapped();
+        }
+        return catalog;
     }
 }

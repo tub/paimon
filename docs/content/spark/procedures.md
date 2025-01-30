@@ -159,13 +159,17 @@ This section introduce all available spark procedures about paimon.
     <tr>
       <td>rollback</td>
       <td>
-         To rollback to a specific version of target table. Argument:
+         To rollback to a specific version of target table, note version/snapshot/tag must set one of them. Argument:
             <li>table: the target table identifier. Cannot be empty.</li>
-            <li>version: id of the snapshot or name of tag that will roll back to.</li>
+            <li>version: id of the snapshot or name of tag that will roll back to, version would be Deprecated.</li>
+            <li>snapshot: snapshot that will roll back to.</li>
+            <li>tag: tag that will roll back to.</li>
       </td>
       <td>
           CALL sys.rollback(table => 'default.T', version => 'my_tag')<br/><br/>
-          CALL sys.rollback(table => 'default.T', version => 10)
+          CALL sys.rollback(table => 'default.T', version => 10)<br/><br/>
+          CALL sys.rollback(table => 'default.T', tag => 'tag1')
+          CALL sys.rollback(table => 'default.T', snapshot => 2)
       </td>
     </tr>
     <tr>
@@ -177,6 +181,27 @@ This section introduce all available spark procedures about paimon.
       </td>
       <td>
           CALL sys.rollback_to_timestamp(table => 'default.T', timestamp => 1730292023000)<br/><br/>
+      </td>
+    </tr>
+    <tr>
+      <td>rollback_to_watermark</td>
+      <td>
+         To rollback to the snapshot which earlier or equal than watermark. Argument:
+            <li>table: the target table identifier. Cannot be empty.</li>
+            <li>watermark: roll back to the snapshot which earlier or equal than watermark.</li>
+      </td>
+      <td>
+          CALL sys.rollback_to_watermark(table => 'default.T', watermark => 1730292023000)<br/><br/>
+      </td>
+    </tr>
+    <tr>
+      <td>purge_files</td>
+      <td>
+         To clear table with purge files directly. Argument:
+            <li>table: the target table identifier. Cannot be empty.</li>
+      </td>
+      <td>
+          CALL sys.purge_files(table => 'default.T')<br/><br/>
       </td>
     </tr>
     <tr>
@@ -235,6 +260,24 @@ This section introduce all available spark procedures about paimon.
           CALL sys.remove_orphan_files(table => 'default.T', older_than => '2023-10-31 12:00:00', dry_run => true, parallelism => '5', mode => 'local')
       </td>
     </tr>
+    <tr>
+      <td>remove_unexisting_files</td>
+      <td>
+        Procedure to remove unexisting data files from manifest entries. See <a href="https://paimon.apache.org/docs/master/api/java/org/apache/paimon/flink/action/RemoveUnexistingFilesAction.html">Java docs</a> for detailed use cases. Arguments:
+            <li>identifier: the target table identifier. Cannot be empty, you can use database_name.* to clean whole database.</li>
+            <li>dryRun (optional): only check what files will be removed, but not really remove them. Default is false.</li>
+            <li>parallelism (optional): number of parallelisms to check files in the manifests.</li>
+         <br>
+         Note that user is on his own risk using this procedure, which may cause data loss when used outside from the use cases listed in Java docs.
+      </td>
+      <td>
+        -- remove unexisting data files in the table `mydb.myt`
+        CALL sys.remove_unexisting_files(table => 'mydb.myt')
+        <br>
+        -- only check what files will be removed, but not really remove them (dry run)
+        CALL sys.remove_unexisting_files(table => 'mydb.myt', dry_run = true)
+      </td>
+   </tr>
     <tr>
       <td>repair</td>
       <td>

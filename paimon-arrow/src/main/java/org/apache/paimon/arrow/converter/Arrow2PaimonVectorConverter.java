@@ -63,6 +63,7 @@ import org.apache.paimon.types.TimestampType;
 import org.apache.paimon.types.TinyIntType;
 import org.apache.paimon.types.VarBinaryType;
 import org.apache.paimon.types.VarCharType;
+import org.apache.paimon.types.VariantType;
 
 import org.apache.arrow.vector.BigIntVector;
 import org.apache.arrow.vector.BitVector;
@@ -424,6 +425,11 @@ public interface Arrow2PaimonVectorConverter {
         }
 
         @Override
+        public Arrow2PaimonVectorConverter visit(VariantType variantType) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
         public Arrow2PaimonVectorConverter visit(ArrayType arrayType) {
             final Arrow2PaimonVectorConverter arrowVectorConvertor =
                     arrayType.getElementType().accept(this);
@@ -513,15 +519,8 @@ public interface Arrow2PaimonVectorConverter {
                         }
 
                         @Override
-                        public ColumnVector getKeyColumnVector() {
-                            init();
-                            return keyColumnVector;
-                        }
-
-                        @Override
-                        public ColumnVector getValueColumnVector() {
-                            init();
-                            return valueColumnVector;
+                        public ColumnVector[] getChildren() {
+                            return new ColumnVector[] {keyColumnVector, valueColumnVector};
                         }
                     };
         }

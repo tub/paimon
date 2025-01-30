@@ -21,9 +21,13 @@ package org.apache.paimon.flink;
 import org.apache.paimon.CoreOptions;
 import org.apache.paimon.flink.util.AbstractTestBase;
 import org.apache.paimon.table.FileStoreTable;
+import org.apache.paimon.table.Table;
+import org.apache.paimon.table.source.snapshot.TimeTravelUtil;
 import org.apache.paimon.utils.BlockingIterator;
 import org.apache.paimon.utils.DateTimeUtils;
 import org.apache.paimon.utils.SnapshotNotExistException;
+
+import org.apache.paimon.shade.guava30.com.google.common.collect.ImmutableList;
 
 import org.apache.flink.api.dag.Transformation;
 import org.apache.flink.types.Row;
@@ -35,6 +39,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import java.math.BigDecimal;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
@@ -300,6 +305,34 @@ public class BatchFileStoreITCase extends CatalogITCaseBase {
     }
 
     @Test
+    public void testIncrementBetweenReadWithSnapshotExpiration() throws Exception {
+        String tableName = "T";
+        batchSql(String.format("INSERT INTO %s VALUES (1, 11, 111)", tableName));
+
+        paimonTable(tableName).createTag("tag1", 1);
+
+        batchSql(String.format("INSERT INTO %s VALUES (2, 22, 222)", tableName));
+        paimonTable(tableName).createTag("tag2", 2);
+        batchSql(String.format("INSERT INTO %s VALUES (3, 33, 333)", tableName));
+        paimonTable(tableName).createTag("tag3", 3);
+
+        // expire snapshot 1
+        Map<String, String> expireOptions = new HashMap<>();
+        expireOptions.put(CoreOptions.SNAPSHOT_NUM_RETAINED_MAX.key(), "1");
+        expireOptions.put(CoreOptions.SNAPSHOT_NUM_RETAINED_MIN.key(), "1");
+        FileStoreTable table = (FileStoreTable) paimonTable(tableName);
+        table.copy(expireOptions).newCommit("").expireSnapshots();
+        assertThat(table.snapshotManager().snapshotCount()).isEqualTo(1);
+
+        assertThat(
+                        batchSql(
+                                String.format(
+                                        "SELECT * FROM %s /*+ OPTIONS('incremental-between' = 'tag1,tag2', 'deletion-vectors.enabled' = 'true') */",
+                                        tableName)))
+                .containsExactlyInAnyOrder(Row.of(2, 22, 222));
+    }
+
+    @Test
     public void testSortSpillMerge() {
         sql(
                 "CREATE TABLE IF NOT EXISTS KT (a INT PRIMARY KEY NOT ENFORCED, b STRING) WITH ('sort-spill-threshold'='2')");
@@ -561,17 +594,33 @@ public class BatchFileStoreITCase extends CatalogITCaseBase {
 
         String sql = "SELECT COUNT(*) FROM count_append_dv";
         assertThat(sql(sql)).containsOnly(Row.of(2L));
-        validateCount1NotPushDown(sql);
+        validateCount1PushDown(sql);
     }
 
     @Test
     public void testCountStarPK() {
-        sql("CREATE TABLE count_pk (f0 INT PRIMARY KEY NOT ENFORCED, f1 STRING)");
-        sql("INSERT INTO count_pk VALUES (1, 'a'), (2, 'b')");
+        sql(
+                "CREATE TABLE count_pk (f0 INT PRIMARY KEY NOT ENFORCED, f1 STRING) WITH ('file.format' = 'avro')");
+        sql("INSERT INTO count_pk VALUES (1, 'a'), (2, 'b'), (3, 'c'), (4, 'd')");
+        sql("INSERT INTO count_pk VALUES (1, 'e')");
 
         String sql = "SELECT COUNT(*) FROM count_pk";
-        assertThat(sql(sql)).containsOnly(Row.of(2L));
+        assertThat(sql(sql)).containsOnly(Row.of(4L));
         validateCount1NotPushDown(sql);
+    }
+
+    @Test
+    public void testCountStarPKDv() {
+        sql(
+                "CREATE TABLE count_pk_dv (f0 INT PRIMARY KEY NOT ENFORCED, f1 STRING) WITH ("
+                        + "'file.format' = 'avro', "
+                        + "'deletion-vectors.enabled' = 'true')");
+        sql("INSERT INTO count_pk_dv VALUES (1, 'a'), (2, 'b'), (3, 'c'), (4, 'd')");
+        sql("INSERT INTO count_pk_dv VALUES (1, 'e')");
+
+        String sql = "SELECT COUNT(*) FROM count_pk_dv";
+        assertThat(sql(sql)).containsOnly(Row.of(4L));
+        validateCount1PushDown(sql);
     }
 
     @Test
@@ -590,6 +639,47 @@ public class BatchFileStoreITCase extends CatalogITCaseBase {
         assertThat(sql("SELECT * FROM parquet_row_timestamp"))
                 .containsExactly(
                         Row.of(Row.of(DateTimeUtils.toLocalDateTime("2024-11-13 18:00:00", 0))));
+    }
+
+    @Test
+    public void testScanBounded() {
+        sql("INSERT INTO T VALUES (1, 11, 111), (2, 22, 222)");
+        List<Row> result;
+        try (CloseableIterator<Row> iter =
+                sEnv.executeSql("SELECT * FROM T /*+ OPTIONS('scan.bounded'='true') */")
+                        .collect()) {
+            result = ImmutableList.copyOf(iter);
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+        assertThat(result).containsExactlyInAnyOrder(Row.of(1, 11, 111), Row.of(2, 22, 222));
+    }
+
+    @Test
+    public void testIncrementTagQueryWithRescaleBucket() throws Exception {
+        sql("CREATE TABLE test (a INT PRIMARY KEY NOT ENFORCED, b INT) WITH ('bucket' = '1')");
+        Table table = paimonTable("test");
+
+        sql("INSERT INTO test VALUES (1, 11), (2, 22)");
+        sql("ALTER TABLE test SET ('bucket' = '2')");
+        sql("INSERT OVERWRITE test SELECT * FROM test");
+        sql("INSERT INTO test VALUES (3, 33)");
+
+        table.createTag("2024-01-01", 1);
+        table.createTag("2024-01-02", 3);
+
+        List<String> incrementalOptions =
+                Arrays.asList(
+                        "'incremental-between'='2024-01-01,2024-01-02'",
+                        "'incremental-to-auto-tag'='2024-01-02'");
+
+        for (String option : incrementalOptions) {
+            assertThatThrownBy(() -> sql("SELECT * FROM test /*+ OPTIONS (%s) */", option))
+                    .satisfies(
+                            anyCauseMatches(
+                                    TimeTravelUtil.InconsistentTagBucketException.class,
+                                    "The bucket number of two tags are different (1, 2), which is not supported in incremental tag query."));
+        }
     }
 
     private void validateCount1PushDown(String sql) {

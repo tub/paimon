@@ -38,44 +38,44 @@ public class DataTableSource extends BaseDataTableSource {
     public DataTableSource(
             ObjectIdentifier tableIdentifier,
             Table table,
-            boolean streaming,
+            boolean unbounded,
             DynamicTableFactory.Context context,
             @Nullable LogStoreTableFactory logStoreTableFactory) {
         this(
                 tableIdentifier,
                 table,
-                streaming,
+                unbounded,
                 context,
                 logStoreTableFactory,
                 null,
                 null,
                 null,
                 null,
-                false);
+                null);
     }
 
     public DataTableSource(
             ObjectIdentifier tableIdentifier,
             Table table,
-            boolean streaming,
+            boolean unbounded,
             DynamicTableFactory.Context context,
             @Nullable LogStoreTableFactory logStoreTableFactory,
             @Nullable Predicate predicate,
             @Nullable int[][] projectFields,
             @Nullable Long limit,
             @Nullable WatermarkStrategy<RowData> watermarkStrategy,
-            boolean isBatchCountStar) {
+            @Nullable Long countPushed) {
         super(
                 tableIdentifier,
                 table,
-                streaming,
+                unbounded,
                 context,
                 logStoreTableFactory,
                 predicate,
                 projectFields,
                 limit,
                 watermarkStrategy,
-                isBatchCountStar);
+                countPushed);
     }
 
     @Override
@@ -83,14 +83,14 @@ public class DataTableSource extends BaseDataTableSource {
         return new DataTableSource(
                 tableIdentifier,
                 table,
-                streaming,
+                unbounded,
                 context,
                 logStoreTableFactory,
                 predicate,
                 projectFields,
                 limit,
                 watermarkStrategy,
-                isBatchCountStar);
+                countPushed);
     }
 
     @Override

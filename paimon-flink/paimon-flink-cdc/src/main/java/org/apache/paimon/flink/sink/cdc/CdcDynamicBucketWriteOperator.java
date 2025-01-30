@@ -35,8 +35,10 @@ import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
 import java.io.IOException;
 import java.util.Optional;
 
-import static org.apache.paimon.flink.sink.cdc.CdcRecordStoreWriteOperator.MAX_PROCESS_ELEMENT_RETRY_COUNT;
+import static org.apache.paimon.flink.sink.cdc.CdcRecordStoreWriteOperator.LOG_CORRUPT_RECORD;
+import static org.apache.paimon.flink.sink.cdc.CdcRecordStoreWriteOperator.MAX_RETRY_NUM_TIMES;
 import static org.apache.paimon.flink.sink.cdc.CdcRecordStoreWriteOperator.RETRY_SLEEP_TIME;
+import static org.apache.paimon.flink.sink.cdc.CdcRecordStoreWriteOperator.SKIP_CORRUPT_RECORD;
 import static org.apache.paimon.flink.sink.cdc.CdcRecordUtils.toGenericRow;
 
 /**
@@ -48,7 +50,11 @@ public class CdcDynamicBucketWriteOperator extends TableWriteOperator<Tuple2<Cdc
 
     private final long retrySleepMillis;
 
-    private final long maxProcessElementRetryCount;
+    private final int maxRetryNumTimes;
+
+    private final boolean skipCorruptRecord;
+
+    private final boolean logCorruptRecord;
 
     private CdcDynamicBucketWriteOperator(
             StreamOperatorParameters<Committable> parameters,
@@ -58,8 +64,9 @@ public class CdcDynamicBucketWriteOperator extends TableWriteOperator<Tuple2<Cdc
         super(parameters, table, storeSinkWriteProvider, initialCommitUser);
         this.retrySleepMillis =
                 table.coreOptions().toConfiguration().get(RETRY_SLEEP_TIME).toMillis();
-        this.maxProcessElementRetryCount =
-                table.coreOptions().toConfiguration().get(MAX_PROCESS_ELEMENT_RETRY_COUNT);
+        this.maxRetryNumTimes = table.coreOptions().toConfiguration().get(MAX_RETRY_NUM_TIMES);
+        this.skipCorruptRecord = table.coreOptions().toConfiguration().get(SKIP_CORRUPT_RECORD);
+        this.logCorruptRecord = table.coreOptions().toConfiguration().get(LOG_CORRUPT_RECORD);
     }
 
     @Override
@@ -76,11 +83,13 @@ public class CdcDynamicBucketWriteOperator extends TableWriteOperator<Tuple2<Cdc
     @Override
     public void processElement(StreamRecord<Tuple2<CdcRecord, Integer>> element) throws Exception {
         Tuple2<CdcRecord, Integer> record = element.getValue();
-        Optional<GenericRow> optionalConverted = toGenericRow(record.f0, table.schema().fields());
+        Optional<GenericRow> optionalConverted =
+                toGenericRow(record.f0, table.schema().fields(), logCorruptRecord);
         if (!optionalConverted.isPresent()) {
-            for (int count = 0; count <= maxProcessElementRetryCount; count++) {
+            for (int retry = 0; retry < maxRetryNumTimes; ++retry) {
                 table = table.copyWithLatestSchema();
-                optionalConverted = toGenericRow(record.f0, table.schema().fields());
+                optionalConverted =
+                        toGenericRow(record.f0, table.schema().fields(), logCorruptRecord);
                 if (optionalConverted.isPresent()) {
                     break;
                 }
@@ -89,16 +98,22 @@ public class CdcDynamicBucketWriteOperator extends TableWriteOperator<Tuple2<Cdc
             write.replace(table);
         }
 
-        try {
-            if (optionalConverted.isPresent()) {
-                write.write(optionalConverted.get(), record.f1);
-            } else {
+        if (!optionalConverted.isPresent()) {
+            if (skipCorruptRecord) {
                 LOG.warn(
-                        "CdcDynamicBucketWriteOperator is skipping corrupt or unparsable record={}",
-                        record);
+                        "Skipping corrupt or unparsable record {}",
+                        (logCorruptRecord ? record : "<redacted>"));
+            } else {
+                throw new RuntimeException(
+                        "Unable to process element. Possibly a corrupt record: "
+                                + (logCorruptRecord ? record : "<redacted>"));
             }
-        } catch (Exception e) {
-            throw new IOException(e);
+        } else {
+            try {
+                write.write(optionalConverted.get(), record.f1);
+            } catch (Exception e) {
+                throw new IOException(e);
+            }
         }
     }
 

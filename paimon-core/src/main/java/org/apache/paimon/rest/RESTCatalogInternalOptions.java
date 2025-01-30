@@ -23,6 +23,7 @@ import org.apache.paimon.options.ConfigOptions;
 
 /** Internal options for REST Catalog. */
 public class RESTCatalogInternalOptions {
+
     public static final ConfigOption<String> PREFIX =
             ConfigOptions.key("prefix")
                     .stringType()

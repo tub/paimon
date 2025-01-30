@@ -25,6 +25,7 @@ import org.apache.paimon.catalog.Identifier;
 import org.apache.paimon.client.ClientPool;
 import org.apache.paimon.options.CatalogOptions;
 import org.apache.paimon.options.Options;
+import org.apache.paimon.partition.Partition;
 import org.apache.paimon.schema.Schema;
 import org.apache.paimon.schema.SchemaChange;
 import org.apache.paimon.types.DataField;
@@ -55,10 +56,12 @@ import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.apache.hadoop.hive.conf.HiveConf.ConfVars.METASTORECONNECTURLKEY;
+import static org.apache.paimon.CoreOptions.METASTORE_TAG_TO_PARTITION;
 import static org.apache.paimon.hive.HiveCatalog.PAIMON_TABLE_IDENTIFIER;
 import static org.apache.paimon.hive.HiveCatalog.TABLE_TYPE_PROP;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.fail;
 
 /** Tests for {@link HiveCatalog}. */
@@ -85,23 +88,18 @@ public class HiveCatalogTest extends CatalogTestBase {
     @Test
     public void testCheckIdentifierUpperCase() throws Exception {
         catalog.createDatabase("test_db", false);
-        assertThatThrownBy(
-                        () ->
-                                catalog.createTable(
-                                        Identifier.create("TEST_DB", "new_table"),
-                                        DEFAULT_TABLE_SCHEMA,
-                                        false))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessage("Database name [TEST_DB] cannot contain upper case in the catalog.");
-
+        assertThatThrownBy(() -> catalog.createDatabase("TEST_DB", false))
+                .isInstanceOf(Catalog.DatabaseAlreadyExistException.class)
+                .hasMessage("Database TEST_DB already exists.");
+        catalog.createTable(Identifier.create("TEST_DB", "new_table"), DEFAULT_TABLE_SCHEMA, false);
         assertThatThrownBy(
                         () ->
                                 catalog.createTable(
                                         Identifier.create("test_db", "NEW_TABLE"),
                                         DEFAULT_TABLE_SCHEMA,
                                         false))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessage("Table name [NEW_TABLE] cannot contain upper case in the catalog.");
+                .isInstanceOf(Catalog.TableAlreadyExistException.class)
+                .hasMessage("Table test_db.NEW_TABLE already exists.");
     }
 
     private static final String HADOOP_CONF_DIR =
@@ -307,8 +305,6 @@ public class HiveCatalogTest extends CatalogTestBase {
             Thread thread1 =
                     new Thread(
                             () -> {
-                                System.out.println(
-                                        "First thread started at " + System.currentTimeMillis());
                                 try {
                                     tables1.addAll(catalog.listTables(databaseName));
                                 } catch (Catalog.DatabaseNotExistException e) {
@@ -318,8 +314,6 @@ public class HiveCatalogTest extends CatalogTestBase {
             Thread thread2 =
                     new Thread(
                             () -> {
-                                System.out.println(
-                                        "Second thread started at " + System.currentTimeMillis());
                                 try {
                                     tables2.addAll(catalog.listTables(databaseName));
                                 } catch (Catalog.DatabaseNotExistException e) {
@@ -354,14 +348,77 @@ public class HiveCatalogTest extends CatalogTestBase {
         }
     }
 
+    @Test
+    public void testListTables() throws Exception {
+        String databaseName = "testListTables";
+        catalog.dropDatabase(databaseName, true, true);
+        catalog.createDatabase(databaseName, true);
+        for (int i = 0; i < 500; i++) {
+            catalog.createTable(
+                    Identifier.create(databaseName, "table" + i),
+                    Schema.newBuilder().column("col", DataTypes.INT()).build(),
+                    true);
+        }
+
+        // use default 300
+        List<String> defaultBatchTables = catalog.listTables(databaseName);
+
+        // use custom 400
+        HiveConf hiveConf = new HiveConf();
+        hiveConf.set(HiveConf.ConfVars.METASTORE_BATCH_RETRIEVE_MAX.varname, "400");
+        String metastoreClientClass = "org.apache.hadoop.hive.metastore.HiveMetaStoreClient";
+        List<String> customBatchTables;
+        try (HiveCatalog customCatalog =
+                new HiveCatalog(fileIO, hiveConf, metastoreClientClass, warehouse)) {
+            customBatchTables = customCatalog.listTables(databaseName);
+        } catch (Exception e) {
+            throw e;
+        }
+        assertEquals(defaultBatchTables.size(), customBatchTables.size());
+        defaultBatchTables.sort(String::compareTo);
+        customBatchTables.sort(String::compareTo);
+        for (int i = 0; i < defaultBatchTables.size(); i++) {
+            assertEquals(defaultBatchTables.get(i), customBatchTables.get(i));
+        }
+
+        // use invalid batch size
+        HiveConf invalidHiveConf = new HiveConf();
+        invalidHiveConf.set(HiveConf.ConfVars.METASTORE_BATCH_RETRIEVE_MAX.varname, "dummy");
+        List<String> invalidBatchSizeTables;
+        try (HiveCatalog invalidBatchSizeCatalog =
+                new HiveCatalog(fileIO, invalidHiveConf, metastoreClientClass, warehouse)) {
+            invalidBatchSizeTables = invalidBatchSizeCatalog.listTables(databaseName);
+        } catch (Exception e) {
+            throw e;
+        }
+        assertEquals(defaultBatchTables.size(), invalidBatchSizeTables.size());
+        invalidBatchSizeTables.sort(String::compareTo);
+        for (int i = 0; i < defaultBatchTables.size(); i++) {
+            assertEquals(defaultBatchTables.get(i), invalidBatchSizeTables.get(i));
+        }
+
+        catalog.dropDatabase(databaseName, true, true);
+    }
+
     @Override
     protected boolean supportsView() {
         return true;
     }
 
     @Override
+    protected boolean supportPartitions() {
+        return true;
+    }
+
+    @Override
     protected boolean supportsFormatTable() {
         return true;
+    }
+
+    @Override
+    protected void checkPartition(Partition expected, Partition actual) {
+        assertThat(actual.recordCount()).isEqualTo(expected.recordCount());
+        assertThat(actual.lastFileCreationTime()).isEqualTo(expected.lastFileCreationTime() / 1000);
     }
 
     @Test
@@ -394,5 +451,36 @@ public class HiveCatalogTest extends CatalogTestBase {
                 .isEqualTo("file:" + externalTablePath);
 
         externalWarehouseCatalog.close();
+    }
+
+    @Test
+    public void testTagToPartitionTable() throws Exception {
+        String databaseName = "testTagToPartitionTable";
+        catalog.dropDatabase(databaseName, true, true);
+        catalog.createDatabase(databaseName, true);
+        Identifier identifier = Identifier.create(databaseName, "table");
+        catalog.createTable(
+                identifier,
+                Schema.newBuilder()
+                        .option(METASTORE_TAG_TO_PARTITION.key(), "dt")
+                        .column("col", DataTypes.INT())
+                        .column("dt", DataTypes.STRING())
+                        .build(),
+                true);
+
+        catalog.createPartitions(
+                identifier,
+                Arrays.asList(
+                        Collections.singletonMap("dt", "20250101"),
+                        Collections.singletonMap("dt", "20250102")));
+        assertThat(catalog.listPartitions(identifier).stream().map(Partition::spec))
+                .containsExactlyInAnyOrder(
+                        Collections.singletonMap("dt", "20250102"),
+                        Collections.singletonMap("dt", "20250101"));
+    }
+
+    @Override
+    protected boolean supportsAlterDatabase() {
+        return true;
     }
 }

@@ -19,11 +19,12 @@
 package org.apache.paimon.hive;
 
 import org.apache.paimon.catalog.Catalog;
+import org.apache.paimon.catalog.DelegateCatalog;
 import org.apache.paimon.catalog.Identifier;
+import org.apache.paimon.catalog.RenamingSnapshotCommit;
 import org.apache.paimon.flink.FlinkCatalog;
 import org.apache.paimon.hive.annotation.Minio;
 import org.apache.paimon.hive.runner.PaimonEmbeddedHiveRunner;
-import org.apache.paimon.metastore.MetastoreClient;
 import org.apache.paimon.operation.Lock;
 import org.apache.paimon.privilege.NoPrivilegeException;
 import org.apache.paimon.s3.MinioTestContainer;
@@ -577,8 +578,7 @@ public abstract class HiveCatalogITCaseBase {
                                 "  'uri' = '',",
                                 "  'warehouse' = '" + path + "',",
                                 "  'lock.enabled' = 'true',",
-                                "  'table.type' = 'EXTERNAL',",
-                                "  'allow-upper-case' = 'true'",
+                                "  'table.type' = 'EXTERNAL'",
                                 ")"))
                 .await();
         tEnv.executeSql("USE CATALOG paimon_catalog_01").await();
@@ -593,30 +593,6 @@ public abstract class HiveCatalogITCaseBase {
         tEnv.executeSql("DROP TABLE t").await();
         Path tablePath = new Path(path, "test_db.db/t");
         assertThat(tablePath.getFileSystem().exists(tablePath)).isTrue();
-
-        tEnv.executeSql(
-                        String.join(
-                                "\n",
-                                "CREATE CATALOG paimon_catalog_02 WITH (",
-                                "  'type' = 'paimon',",
-                                "  'metastore' = 'hive',",
-                                "  'uri' = '',",
-                                "  'warehouse' = '" + path + "',",
-                                "  'lock.enabled' = 'true',",
-                                "  'table.type' = 'EXTERNAL',",
-                                "  'allow-upper-case' = 'false'",
-                                ")"))
-                .await();
-        tEnv.executeSql("USE CATALOG paimon_catalog_02").await();
-        tEnv.executeSql("USE test_db").await();
-
-        // set case-sensitive = false would throw exception out
-        assertThatThrownBy(
-                        () ->
-                                tEnv.executeSql(
-                                                "CREATE TABLE t1 ( aa INT, Bb STRING ) WITH ( 'file.format' = 'avro' )")
-                                        .await())
-                .isInstanceOf(RuntimeException.class);
     }
 
     @Test
@@ -1006,7 +982,8 @@ public abstract class HiveCatalogITCaseBase {
 
         // the target table name has upper case.
         assertThatThrownBy(() -> tEnv.executeSql("ALTER TABLE t1 RENAME TO T1"))
-                .hasMessage("Table name [T1] cannot contain upper case in the catalog.");
+                .hasMessage(
+                        "Could not execute ALTER TABLE my_hive.test_db.t1 RENAME TO my_hive.test_db.T1");
 
         tEnv.executeSql("ALTER TABLE t1 RENAME TO t3").await();
 
@@ -1122,8 +1099,11 @@ public abstract class HiveCatalogITCaseBase {
         tEnv.executeSql("CREATE TABLE t (a INT)");
         Catalog catalog =
                 ((FlinkCatalog) tEnv.getCatalog(tEnv.getCurrentCatalog()).get()).catalog();
-        FileStoreTable table = (FileStoreTable) catalog.getTable(new Identifier("test_db", "t"));
+        Identifier identifier = new Identifier("test_db", "t");
+        FileStoreTable table = (FileStoreTable) catalog.getTable(identifier);
         CatalogEnvironment catalogEnv = table.catalogEnvironment();
+        RenamingSnapshotCommit.Factory factory =
+                (RenamingSnapshotCommit.Factory) catalogEnv.commitFactory();
 
         AtomicInteger count = new AtomicInteger(0);
         List<Thread> threads = new ArrayList<>();
@@ -1138,7 +1118,11 @@ public abstract class HiveCatalogITCaseBase {
             Thread thread =
                     new Thread(
                             () -> {
-                                Lock lock = catalogEnv.lockFactory().create();
+                                Lock lock =
+                                        Lock.fromCatalog(
+                                                factory.lockFactory()
+                                                        .createLock(factory.lockContext()),
+                                                identifier);
                                 for (int j = 0; j < 10; j++) {
                                     try {
                                         lock.runWithLock(unsafeIncrement);
@@ -1160,24 +1144,16 @@ public abstract class HiveCatalogITCaseBase {
 
     @Test
     public void testUpperCase() {
+        tEnv.executeSql("CREATE TABLE T (a INT, b STRING ) WITH ( 'file.format' = 'avro' )");
+        tEnv.executeSql(
+                "CREATE TABLE tT (A INT, b STRING, C STRING) WITH ( 'file.format' = 'avro')");
         assertThatThrownBy(
                         () ->
                                 tEnv.executeSql(
-                                                "CREATE TABLE T ( a INT, b STRING ) WITH ( 'file.format' = 'avro' )")
+                                                "CREATE TABLE tt ( A INT, b STRING, C STRING) WITH ( 'file.format' = 'avro' )")
                                         .await())
                 .hasRootCauseMessage(
-                        String.format(
-                                "Table name [%s] cannot contain upper case in the catalog.", "T"));
-
-        assertThatThrownBy(
-                        () ->
-                                tEnv.executeSql(
-                                                "CREATE TABLE t (A INT, b STRING, C STRING) WITH ( 'file.format' = 'avro')")
-                                        .await())
-                .hasRootCauseMessage(
-                        String.format(
-                                "Field name %s cannot contain upper case in the catalog.",
-                                "[A, C]"));
+                        "Table (or view) test_db.tt already exists in Catalog my_hive.");
     }
 
     @Test
@@ -1545,11 +1521,11 @@ public abstract class HiveCatalogITCaseBase {
         Identifier identifier = new Identifier("test_db", "mark_done_t2");
         Table table = catalog.getTable(identifier);
         assertThat(table).isInstanceOf(FileStoreTable.class);
-        FileStoreTable fileStoreTable = (FileStoreTable) table;
-        MetastoreClient.Factory metastoreClientFactory =
-                fileStoreTable.catalogEnvironment().metastoreClientFactory();
-        HiveMetastoreClient metastoreClient = (HiveMetastoreClient) metastoreClientFactory.create();
-        IMetaStoreClient hmsClient = metastoreClient.client();
+        while (catalog instanceof DelegateCatalog) {
+            catalog = ((DelegateCatalog) catalog).wrapped();
+        }
+        HiveCatalog hiveCatalog = (HiveCatalog) catalog;
+        IMetaStoreClient hmsClient = hiveCatalog.getHmsClient();
         Map<String, String> partitionSpec = Collections.singletonMap("dt", "20240501");
         // LOAD_DONE event is not marked by now.
         assertThat(

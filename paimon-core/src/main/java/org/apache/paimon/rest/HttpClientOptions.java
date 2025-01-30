@@ -18,7 +18,9 @@
 
 package org.apache.paimon.rest;
 
-import org.apache.paimon.shade.jackson2.com.fasterxml.jackson.databind.ObjectMapper;
+import org.apache.paimon.options.Options;
+
+import javax.annotation.Nullable;
 
 import java.time.Duration;
 import java.util.Optional;
@@ -27,25 +29,31 @@ import java.util.Optional;
 public class HttpClientOptions {
 
     private final String uri;
-    private final Optional<Duration> connectTimeout;
-    private final Optional<Duration> readTimeout;
-    private final ObjectMapper mapper;
+    @Nullable private final Duration connectTimeout;
     private final int threadPoolSize;
-    private final ErrorHandler errorHandler;
+    private final int maxConnections;
+    private final int maxRetries;
 
     public HttpClientOptions(
             String uri,
-            Optional<Duration> connectTimeout,
-            Optional<Duration> readTimeout,
-            ObjectMapper mapper,
+            @Nullable Duration connectTimeout,
             int threadPoolSize,
-            ErrorHandler errorHandler) {
+            int maxConnections,
+            int maxRetries) {
         this.uri = uri;
         this.connectTimeout = connectTimeout;
-        this.readTimeout = readTimeout;
-        this.mapper = mapper;
         this.threadPoolSize = threadPoolSize;
-        this.errorHandler = errorHandler;
+        this.maxConnections = maxConnections;
+        this.maxRetries = maxRetries;
+    }
+
+    public static HttpClientOptions create(Options options) {
+        return new HttpClientOptions(
+                options.get(RESTCatalogOptions.URI),
+                options.get(RESTCatalogOptions.CONNECTION_TIMEOUT),
+                options.get(RESTCatalogOptions.THREAD_POOL_SIZE),
+                options.get(RESTCatalogOptions.MAX_CONNECTIONS),
+                options.get(RESTCatalogOptions.MAX_RETIES));
     }
 
     public String uri() {
@@ -53,22 +61,18 @@ public class HttpClientOptions {
     }
 
     public Optional<Duration> connectTimeout() {
-        return connectTimeout;
-    }
-
-    public Optional<Duration> readTimeout() {
-        return readTimeout;
-    }
-
-    public ObjectMapper mapper() {
-        return mapper;
+        return Optional.ofNullable(connectTimeout);
     }
 
     public int threadPoolSize() {
         return threadPoolSize;
     }
 
-    public ErrorHandler errorHandler() {
-        return errorHandler;
+    public int maxConnections() {
+        return maxConnections;
+    }
+
+    public int maxRetries() {
+        return Math.max(maxRetries, 0);
     }
 }

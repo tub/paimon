@@ -119,6 +119,12 @@ public abstract class AbstractFileStoreScan implements FileStoreScan {
     }
 
     @Override
+    public FileStoreScan withPartitionsFilter(List<Map<String, String>> partitions) {
+        manifestsReader.withPartitionsFilter(partitions);
+        return this;
+    }
+
+    @Override
     public FileStoreScan withPartitionFilter(PartitionPredicate predicate) {
         manifestsReader.withPartitionFilter(predicate);
         return this;
@@ -428,6 +434,8 @@ public abstract class AbstractFileStoreScan implements FileStoreScan {
         List<ManifestEntry> entries =
                 manifestFileFactory
                         .create()
+                        .withCacheMetrics(
+                                scanMetrics != null ? scanMetrics.getCacheMetrics() : null)
                         .read(
                                 manifest.fileName(),
                                 manifest.fileSize(),

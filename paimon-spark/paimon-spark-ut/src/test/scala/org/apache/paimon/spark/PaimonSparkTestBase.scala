@@ -19,6 +19,8 @@
 package org.apache.paimon.spark
 
 import org.apache.paimon.catalog.{Catalog, Identifier}
+import org.apache.paimon.fs.FileIO
+import org.apache.paimon.fs.local.LocalFileIO
 import org.apache.paimon.spark.catalog.WithPaimonCatalog
 import org.apache.paimon.spark.extensions.PaimonSparkSessionExtensions
 import org.apache.paimon.spark.sql.{SparkVersionSupport, WithTableOptions}
@@ -36,7 +38,7 @@ import org.scalactic.source.Position
 import org.scalatest.Tag
 
 import java.io.File
-import java.util.TimeZone
+import java.util.{TimeZone, UUID}
 
 import scala.util.Random
 
@@ -45,6 +47,10 @@ class PaimonSparkTestBase
   with SharedSparkSession
   with WithTableOptions
   with SparkVersionSupport {
+
+  protected lazy val commitUser: String = UUID.randomUUID.toString
+
+  protected lazy val fileIO: FileIO = LocalFileIO.create
 
   protected lazy val tempDBDir: File = Utils.createTempDir
 
@@ -64,9 +70,9 @@ class PaimonSparkTestBase
       "org.apache.spark.serializer.JavaSerializer"
     }
     super.sparkConf
+      .set("spark.sql.warehouse.dir", tempDBDir.getCanonicalPath)
       .set("spark.sql.catalog.paimon", classOf[SparkCatalog].getName)
       .set("spark.sql.catalog.paimon.warehouse", tempDBDir.getCanonicalPath)
-      .set("spark.sql.catalog.paimon.cache-enabled", "false")
       .set("spark.sql.extensions", classOf[PaimonSparkSessionExtensions].getName)
       .set("spark.serializer", serializer)
   }
@@ -75,6 +81,7 @@ class PaimonSparkTestBase
     super.beforeAll()
     spark.sql(s"USE paimon")
     spark.sql(s"CREATE DATABASE IF NOT EXISTS paimon.$dbName0")
+    spark.sql(s"USE paimon.$dbName0")
   }
 
   override protected def afterAll(): Unit = {
@@ -153,8 +160,10 @@ class PaimonSparkTestBase
 
   override def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
       pos: Position): Unit = {
-    println(testName)
-    super.test(testName, testTags: _*)(testFun)(pos)
+    super.test(testName, testTags: _*) {
+      println(testName)
+      testFun
+    }(pos)
   }
 
   def loadTable(tableName: String): FileStoreTable = {

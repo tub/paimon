@@ -63,6 +63,8 @@ public class IcebergHiveMetadataCommitter implements IcebergMetadataCommitter {
     private final FileStoreTable table;
     private final Identifier identifier;
     private final ClientPool<IMetaStoreClient, TException> clients;
+    private final String icebergHiveDatabase;
+    private final String icebergHiveTable;
 
     public IcebergHiveMetadataCommitter(FileStoreTable table) {
         this.table = table;
@@ -80,6 +82,8 @@ public class IcebergHiveMetadataCommitter implements IcebergMetadataCommitter {
         String uri = options.get(IcebergOptions.URI);
         String hiveConfDir = options.get(IcebergOptions.HIVE_CONF_DIR);
         String hadoopConfDir = options.get(IcebergOptions.HADOOP_CONF_DIR);
+        String icebergDatabase = options.get(IcebergOptions.METASTORE_DATABASE);
+        String icebergTable = options.get(IcebergOptions.METASTORE_TABLE);
         Configuration hadoopConf = new Configuration();
         hadoopConf.setClassLoader(IcebergHiveMetadataCommitter.class.getClassLoader());
         HiveConf hiveConf = HiveCatalog.createHiveConf(hiveConfDir, hadoopConfDir, hadoopConf);
@@ -99,6 +103,15 @@ public class IcebergHiveMetadataCommitter implements IcebergMetadataCommitter {
                     IcebergOptions.URI.key());
         }
 
+        this.icebergHiveDatabase =
+                icebergDatabase != null && !icebergDatabase.isEmpty()
+                        ? icebergDatabase
+                        : this.identifier.getDatabaseName();
+        this.icebergHiveTable =
+                icebergTable != null && !icebergTable.isEmpty()
+                        ? icebergTable
+                        : this.identifier.getTableName();
+
         this.clients =
                 new CachedClientPool(
                         hiveConf, options, options.getString(IcebergOptions.HIVE_CLIENT_CLASS));
@@ -115,18 +128,14 @@ public class IcebergHiveMetadataCommitter implements IcebergMetadataCommitter {
 
     private void commitMetadataImpl(Path newMetadataPath, @Nullable Path baseMetadataPath)
             throws Exception {
-        if (!databaseExists(identifier.getDatabaseName())) {
-            createDatabase(identifier.getDatabaseName());
+        if (!databaseExists(icebergHiveDatabase)) {
+            createDatabase(icebergHiveDatabase);
         }
 
         Table hiveTable;
-        if (tableExists(identifier)) {
+        if (tableExists()) {
             hiveTable =
-                    clients.run(
-                            client ->
-                                    client.getTable(
-                                            identifier.getDatabaseName(),
-                                            identifier.getTableName()));
+                    clients.run(client -> client.getTable(icebergHiveDatabase, icebergHiveTable));
         } else {
             hiveTable = createTable(newMetadataPath);
         }
@@ -148,8 +157,8 @@ public class IcebergHiveMetadataCommitter implements IcebergMetadataCommitter {
         clients.execute(
                 client ->
                         client.alter_table_with_environmentContext(
-                                identifier.getDatabaseName(),
-                                identifier.getTableName(),
+                                icebergHiveDatabase,
+                                icebergHiveTable,
                                 hiveTable,
                                 environmentContext));
     }
@@ -170,19 +179,16 @@ public class IcebergHiveMetadataCommitter implements IcebergMetadataCommitter {
         clients.execute(client -> client.createDatabase(database));
     }
 
-    private boolean tableExists(Identifier identifier) throws Exception {
-        return clients.run(
-                client ->
-                        client.tableExists(
-                                identifier.getDatabaseName(), identifier.getTableName()));
+    private boolean tableExists() throws Exception {
+        return clients.run(client -> client.tableExists(icebergHiveDatabase, icebergHiveTable));
     }
 
     private Table createTable(Path metadataPath) throws Exception {
         long currentTimeMillis = System.currentTimeMillis();
         Table hiveTable =
                 new Table(
-                        identifier.getTableName(),
-                        identifier.getDatabaseName(),
+                        icebergHiveTable,
+                        icebergHiveDatabase,
                         // current linux user
                         System.getProperty("user.name"),
                         (int) (currentTimeMillis / 1000),
