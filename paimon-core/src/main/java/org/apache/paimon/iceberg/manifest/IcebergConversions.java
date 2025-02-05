@@ -25,7 +25,6 @@ import org.apache.paimon.types.DataType;
 import org.apache.paimon.types.DecimalType;
 import org.apache.paimon.types.LocalZonedTimestampType;
 import org.apache.paimon.types.TimestampType;
-import org.apache.paimon.utils.Preconditions;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -107,12 +106,17 @@ public class IcebergConversions {
     }
 
     private static ByteBuffer timestampToByteBuffer(Timestamp timestamp, int precision) {
-        Preconditions.checkArgument(
-                precision > 3 && precision <= 6,
-                "Paimon Iceberg compatibility only support timestamp type with precision from 4 to 6.");
-        return ByteBuffer.allocate(8)
-                .order(ByteOrder.LITTLE_ENDIAN)
-                .putLong(0, timestamp.toMicros());
+        ByteBuffer buffer = ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN);
+
+        switch (precision) {
+            case 3:
+                return buffer.putLong(0, timestamp.getMillisecond());
+            case 6:
+                return buffer.putLong(0, timestamp.toMicros());
+            default:
+                throw new IllegalArgumentException(
+                        "Paimon Iceberg compatibility supports only milli/microsecond precision timestamps.");
+        }
     }
 
     public static Object toPaimonObject(DataType type, byte[] bytes) {
@@ -148,10 +152,15 @@ public class IcebergConversions {
                 int timestampPrecision = ((TimestampType) type).getPrecision();
                 long timestampLong =
                         ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN).getLong();
-                Preconditions.checkArgument(
-                        timestampPrecision > 3 && timestampPrecision <= 6,
-                        "Paimon Iceberg compatibility only support timestamp type with precision from 4 to 6.");
-                return Timestamp.fromMicros(timestampLong);
+                switch (timestampPrecision) {
+                    case 3:
+                        return Timestamp.fromMicros(timestampLong * 1000);
+                    case 6:
+                        return Timestamp.fromMicros(timestampLong);
+                    default:
+                        throw new IllegalArgumentException(
+                                "Paimon Iceberg compatibility supports only milli/microsecond precision timestamps.");
+                }
             default:
                 throw new UnsupportedOperationException("Cannot deserialize type: " + type);
         }

@@ -169,14 +169,14 @@ public class IcebergDataField {
             case TIMESTAMP_WITHOUT_TIME_ZONE:
                 int timestampPrecision = ((TimestampType) dataType).getPrecision();
                 Preconditions.checkArgument(
-                        timestampPrecision > 3 && timestampPrecision <= 6,
-                        "Paimon Iceberg compatibility only support timestamp type with precision from 4 to 6.");
+                        timestampPrecision == 3 || timestampPrecision == 6,
+                        "Paimon Iceberg compatibility supports only milli/microsecond precision timestamps.");
                 return "timestamp";
             case TIMESTAMP_WITH_LOCAL_TIME_ZONE:
                 int timestampLtzPrecision = ((LocalZonedTimestampType) dataType).getPrecision();
                 Preconditions.checkArgument(
-                        timestampLtzPrecision > 3 && timestampLtzPrecision <= 6,
-                        "Paimon Iceberg compatibility only support timestamp type with precision from 4 to 6.");
+                        timestampLtzPrecision == 3 || timestampLtzPrecision == 6,
+                        "Paimon Iceberg compatibility supports only milli/microsecond precision timestamps.");
                 return "timestamptz";
             case ARRAY:
                 ArrayType arrayType = (ArrayType) dataType;

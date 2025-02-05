@@ -18,6 +18,7 @@
 
 package org.apache.paimon.iceberg.manifest;
 
+import org.apache.paimon.data.Timestamp;
 import org.apache.paimon.types.DataTypes;
 
 import org.junit.jupiter.api.DisplayName;
@@ -27,13 +28,14 @@ import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 
 import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-class IcebergConversionsVarcharTest {
+class IcebergConversionsTest {
 
     @Test
     @DisplayName("Test empty string conversion")
@@ -183,5 +185,92 @@ class IcebergConversionsVarcharTest {
             }
         }
         return false;
+    }
+
+    @ParameterizedTest
+    @MethodSource("provideTimestampConversionCases")
+    void testTimestampToByteBuffer(int precision, Timestamp input, long expectedValue) {
+        ByteBuffer buffer = IcebergConversions.toByteBuffer(DataTypes.TIMESTAMP(precision), input);
+        assertThat(buffer.order()).isEqualTo(ByteOrder.LITTLE_ENDIAN);
+        assertThat(buffer.getLong(0)).isEqualTo(expectedValue);
+    }
+
+    private static Stream<Arguments> provideTimestampConversionCases() {
+        Timestamp timestamp3 = Timestamp.fromEpochMillis(1682164983524L); // 2023-04-22T13:03:03.524
+        Timestamp timestamp6 =
+                Timestamp.fromMicros(1683849603123456L); // 2023-05-12 00:00:03.123456
+
+        return Stream.of(
+                Arguments.of(3, timestamp3, 1682164983524L),
+                Arguments.of(6, timestamp3, 1682164983524000L),
+                Arguments.of(6, timestamp6, 1683849603123456L));
+    }
+
+    @ParameterizedTest
+    @MethodSource("provideInvalidPrecisions")
+    @DisplayName("Test invalid timestamp precisions for ByteBuffer conversion")
+    void testTimestampToByteBufferInvalidPrecisions(int precision) {
+        Timestamp timestamp = Timestamp.fromEpochMillis(1682164983524L);
+
+        assertThatThrownBy(
+                        () ->
+                                IcebergConversions.toByteBuffer(
+                                        DataTypes.TIMESTAMP(precision), timestamp))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage(
+                        "Paimon Iceberg compatibility supports only milli/microsecond precision timestamps.");
+    }
+
+    private static Stream<Arguments> provideInvalidPrecisions() {
+        return Stream.of(
+                Arguments.of(0),
+                Arguments.of(1),
+                Arguments.of(2),
+                Arguments.of(4),
+                Arguments.of(5),
+                Arguments.of(7),
+                Arguments.of(9));
+    }
+
+    // ------------------------------------------------------------------------
+    //  toPaimonObject tests
+    // ------------------------------------------------------------------------
+
+    @ParameterizedTest
+    @MethodSource("provideTimestampTestCases")
+    public void testToPaimonObjectForTimestamp(int precision, long sampleTs, String expectedTs) {
+        byte[] bytes = new byte[8];
+        ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN).putLong(sampleTs);
+
+        Timestamp actualTs =
+                (Timestamp)
+                        IcebergConversions.toPaimonObject(DataTypes.TIMESTAMP(precision), bytes);
+        assertThat(actualTs.toString()).isEqualTo(expectedTs);
+    }
+
+    private static Stream<Arguments> provideTimestampTestCases() {
+        return Stream.of(
+                Arguments.of(3, -1356022717123L, "1927-01-12T07:01:22.877"),
+                Arguments.of(3, 1713790983524L, "2024-04-22T13:03:03.524"),
+                Arguments.of(6, 1640690931207203L, "2021-12-28T11:28:51.207203"));
+    }
+
+    @ParameterizedTest
+    @MethodSource("provideInvalidTimestampCases")
+    void testToPaimonObjectTimestampInvalid(int precision, long sampleTs) {
+        byte[] bytes = new byte[8];
+        ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN).putLong(sampleTs);
+
+        assertThatThrownBy(
+                        () ->
+                                IcebergConversions.toPaimonObject(
+                                        DataTypes.TIMESTAMP(precision), bytes))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage(
+                        "Paimon Iceberg compatibility supports only milli/microsecond precision timestamps.");
+    }
+
+    private static Stream<Arguments> provideInvalidTimestampCases() {
+        return Stream.of(Arguments.of(0, 1698686153L), Arguments.of(9, 1698686153123456789L));
     }
 }
