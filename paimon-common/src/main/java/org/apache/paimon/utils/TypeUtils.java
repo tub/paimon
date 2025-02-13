@@ -173,14 +173,14 @@ public class TypeUtils {
                     List<Object> resultList = new ArrayList<>();
                     for (JsonNode elementNode : arrayNode) {
                         if (!elementNode.isNull()) {
-                            String elementString;
-                            if (elementNode instanceof TextNode) {
-                                elementString = elementNode.asText();
+                            String elementJson;
+                            if (elementNode.isTextual()) {
+                                elementJson = elementNode.asText();
                             } else {
-                                elementString = elementNode.toString();
+                                elementJson = elementNode.toString();
                             }
                             Object elementObject =
-                                    castFromStringInternal(elementString, elementType, isCdcValue);
+                                    castFromStringInternal(elementJson, elementType, isCdcValue);
                             resultList.add(elementObject);
                         } else {
                             resultList.add(null);
@@ -262,14 +262,14 @@ public class TypeUtils {
                         DataField field = rowType.getFields().get(pos);
                         JsonNode fieldNode = rowNode.get(field.name());
                         if (fieldNode != null && !fieldNode.isNull()) {
-                            String fieldString;
-                            if (fieldNode instanceof TextNode) {
-                                fieldString = fieldNode.asText();
+                            String fieldJson;
+                            if (fieldNode.isTextual()) {
+                                fieldJson = fieldNode.asText();
                             } else {
-                                fieldString = fieldNode.toString();
+                                fieldJson = fieldNode.toString();
                             }
                             Object fieldObject =
-                                    castFromStringInternal(fieldString, field.type(), isCdcValue);
+                                    castFromStringInternal(fieldJson, field.type(), isCdcValue);
                             genericRow.setField(pos, fieldObject);
                         } else {
                             genericRow.setField(pos, null); // Handle null fields
