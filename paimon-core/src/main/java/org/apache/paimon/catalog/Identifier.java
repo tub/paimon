@@ -32,10 +32,14 @@ import org.apache.paimon.shade.jackson2.com.fasterxml.jackson.annotation.JsonIgn
 import org.apache.paimon.shade.jackson2.com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import org.apache.paimon.shade.jackson2.com.fasterxml.jackson.annotation.JsonProperty;
 
+import org.jetbrains.annotations.NotNull;
+
 import javax.annotation.Nullable;
 
 import java.io.Serializable;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.List;
 import java.util.Objects;
 
 import static org.apache.paimon.utils.Preconditions.checkArgument;
@@ -203,15 +207,36 @@ public class Identifier implements Serializable {
         checkArgument(
                 !StringUtils.isNullOrWhitespaceOnly(fullName), "fullName cannot be null or empty");
 
-        String[] paths = fullName.split("\\.");
+        List<String> parts = getPartsFromEscaped(fullName);
 
-        if (paths.length != 2) {
+        if (parts.size() != 2) {
             throw new IllegalArgumentException(
                     String.format(
                             "Cannot get splits from '%s' to get database and object", fullName));
         }
 
-        return new Identifier(paths[0], paths[1]);
+        return new Identifier(parts.get(0), parts.get(1));
+    }
+
+    private static @NotNull List<String> getPartsFromEscaped(String fullName) {
+        List<String> parts = new ArrayList<>();
+        StringBuilder current = new StringBuilder();
+        boolean inBacktick = false;
+
+        for (int i = 0; i < fullName.length(); i++) {
+            char character = fullName.charAt(i);
+            if (character == '`') {
+                inBacktick = !inBacktick;
+            } else if (character == '.' && !inBacktick) {
+                parts.add(current.toString());
+                current.setLength(0);
+            } else {
+                current.append(character);
+            }
+        }
+
+        parts.add(current.toString());
+        return parts;
     }
 
     @Override
