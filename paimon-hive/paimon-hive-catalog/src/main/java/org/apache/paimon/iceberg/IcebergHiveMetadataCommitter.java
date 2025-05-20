@@ -206,7 +206,10 @@ public class IcebergHiveMetadataCommitter implements IcebergMetadataCommitter {
                         null,
                         "EXTERNAL_TABLE");
 
-        hiveTable.getParameters().put("DO_NOT_UPDATE_STATS", "true");
+        Options options = new Options(table.options());
+        boolean skipHiveUpdateStats = options.get(IcebergOptions.HIVE_SKIP_UPDATE_STATS);
+
+        hiveTable.getParameters().put("DO_NOT_UPDATE_STATS", Boolean.toString(skipHiveUpdateStats));
         hiveTable.getParameters().put("EXTERNAL", "TRUE");
         hiveTable.getParameters().put("table_type", "ICEBERG");
 
