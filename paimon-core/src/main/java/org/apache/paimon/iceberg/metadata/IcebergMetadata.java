@@ -118,37 +118,6 @@ public class IcebergMetadata {
     @Nullable
     private final Map<String, IcebergRef> refs;
 
-    /** Convenience constructor without properties. */
-    public IcebergMetadata(
-            int formatVersion,
-            String tableUuid,
-            String location,
-            long lastSequenceNumber,
-            int lastColumnId,
-            List<IcebergSchema> schemas,
-            int currentSchemaId,
-            List<IcebergPartitionSpec> partitionSpecs,
-            int lastPartitionId,
-            List<IcebergSnapshot> snapshots,
-            long currentSnapshotId,
-            @Nullable Map<String, IcebergRef> refs) {
-        this(
-                formatVersion,
-                tableUuid,
-                location,
-                lastSequenceNumber,
-                lastColumnId,
-                schemas,
-                currentSchemaId,
-                partitionSpecs,
-                lastPartitionId,
-                snapshots,
-                currentSnapshotId,
-                new HashMap<>(),
-                refs);
-    }
-
-    /** Convenience constructor with properties for column alias name-mapping support. */
     public IcebergMetadata(
             int formatVersion,
             String tableUuid,

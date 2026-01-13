@@ -1090,6 +1090,7 @@ public class IcebergCommitCallback implements CommitCallback, TagCallback {
                             baseMetadata.lastPartitionId(),
                             baseMetadata.snapshots(),
                             baseMetadata.currentSnapshotId(),
+                            baseMetadata.properties(),
                             baseMetadata.refs());
 
             /*
@@ -1148,6 +1149,7 @@ public class IcebergCommitCallback implements CommitCallback, TagCallback {
                             baseMetadata.lastPartitionId(),
                             baseMetadata.snapshots(),
                             baseMetadata.currentSnapshotId(),
+                            baseMetadata.properties(),
                             baseMetadata.refs());
 
             /*
