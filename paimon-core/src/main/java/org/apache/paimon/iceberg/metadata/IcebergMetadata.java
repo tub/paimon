@@ -124,6 +124,32 @@ public class IcebergMetadata {
             List<IcebergSnapshot> snapshots,
             long currentSnapshotId) {
         this(
+                tableUuid,
+                location,
+                lastSequenceNumber,
+                lastColumnId,
+                schemas,
+                currentSchemaId,
+                partitionSpecs,
+                lastPartitionId,
+                snapshots,
+                currentSnapshotId,
+                new HashMap<>());
+    }
+
+    public IcebergMetadata(
+            String tableUuid,
+            String location,
+            long lastSequenceNumber,
+            int lastColumnId,
+            List<IcebergSchema> schemas,
+            int currentSchemaId,
+            List<IcebergPartitionSpec> partitionSpecs,
+            int lastPartitionId,
+            List<IcebergSnapshot> snapshots,
+            long currentSnapshotId,
+            Map<String, String> properties) {
+        this(
                 CURRENT_FORMAT_VERSION,
                 tableUuid,
                 location,
@@ -139,7 +165,7 @@ public class IcebergMetadata {
                 IcebergSortOrder.ORDER_ID,
                 snapshots,
                 currentSnapshotId,
-                new HashMap<>());
+                properties);
     }
 
     @JsonCreator

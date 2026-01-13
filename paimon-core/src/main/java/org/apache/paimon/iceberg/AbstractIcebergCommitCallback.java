@@ -274,6 +274,7 @@ public abstract class AbstractIcebergCommitCallback implements CommitCallback {
                         schemaId);
 
         String tableUuid = UUID.randomUUID().toString();
+        Map<String, String> properties = buildMetadataProperties();
         IcebergMetadata metadata =
                 new IcebergMetadata(
                         tableUuid,
@@ -290,7 +291,8 @@ public abstract class AbstractIcebergCommitCallback implements CommitCallback {
                                         // not sure why, this is a result tested by hand
                                         IcebergPartitionField.FIRST_FIELD_ID - 1),
                         Collections.singletonList(snapshot),
-                        (int) snapshotId);
+                        (int) snapshotId,
+                        properties);
 
         Path metadataPath = pathFactory.toMetadataPath(snapshotId);
         table.fileIO().tryToWriteAtomic(metadataPath, metadata.toJson());
@@ -429,6 +431,10 @@ public abstract class AbstractIcebergCommitCallback implements CommitCallback {
             }
         }
 
+        // Merge existing properties with new name-mapping properties
+        Map<String, String> properties = new HashMap<>(baseMetadata.properties());
+        properties.putAll(buildMetadataProperties());
+
         IcebergMetadata metadata =
                 new IcebergMetadata(
                         baseMetadata.tableUuid(),
@@ -440,7 +446,8 @@ public abstract class AbstractIcebergCommitCallback implements CommitCallback {
                         baseMetadata.partitionSpecs(),
                         baseMetadata.lastPartitionId(),
                         snapshots,
-                        (int) snapshotId);
+                        (int) snapshotId,
+                        properties);
 
         Path metadataPath = pathFactory.toMetadataPath(snapshotId);
         table.fileIO().tryToWriteAtomic(metadataPath, metadata.toJson());
@@ -795,6 +802,31 @@ public abstract class AbstractIcebergCommitCallback implements CommitCallback {
     // -------------------------------------------------------------------------------------
     // Utils
     // -------------------------------------------------------------------------------------
+
+    /**
+     * Build Iceberg metadata properties including name-mapping for column aliases.
+     *
+     * @return properties map with name-mapping if aliases are configured, empty map otherwise
+     */
+    private Map<String, String> buildMetadataProperties() {
+        Map<String, String> tableOptions = table.options();
+        Map<String, String> aliases = IcebergColumnAliasOptions.parseAliases(tableOptions);
+
+        if (aliases.isEmpty()) {
+            return new HashMap<>();
+        }
+
+        // Validate aliases against the current schema
+        IcebergColumnAliasOptions.validateAliases(table.schema().fields(), aliases);
+
+        // Build name-mapping JSON
+        String nameMapping =
+                IcebergColumnAliasOptions.buildNameMapping(table.schema().fields(), aliases);
+
+        Map<String, String> properties = new HashMap<>();
+        properties.put(IcebergColumnAliasOptions.NAME_MAPPING_PROPERTY, nameMapping);
+        return properties;
+    }
 
     private class SchemaCache {
 

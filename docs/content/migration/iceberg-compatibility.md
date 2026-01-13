@@ -533,6 +533,58 @@ Paimon Iceberg compatibility currently supports the following data types.
 
 *: `TIMESTAMP` and `TIMESTAMP_LTZ` type only support precision from 4 to 6
 
+## Column Aliases
+
+Column aliases are configured using table options with the pattern:
+```
+metadata.iceberg.column.<column_name>.alias = <alias_value>
+```
+
+When aliases are configured, Paimon generates an Iceberg [name-mapping](https://iceberg.apache.org/spec/#name-mapping)
+property in the table metadata. This allows Iceberg readers to access columns using either the original name or
+the alias.
+
+### Example
+
+{{< tabs "column-alias-example" >}}
+
+{{< tab "Flink SQL" >}}
+```sql
+CREATE TABLE paimon_catalog.`default`.users (
+    user_id BIGINT,
+    user_name STRING,
+    created_at TIMESTAMP,
+    PRIMARY KEY (user_id) NOT ENFORCED
+) WITH (
+    'metadata.iceberg.storage' = 'hadoop-catalog',
+    'metadata.iceberg.column.user_id.alias' = 'userId',
+    'metadata.iceberg.column.user_name.alias' = 'userName',
+    'metadata.iceberg.column.created_at.alias' = 'createdAt'
+);
+```
+{{< /tab >}}
+
+{{< tab "Spark SQL" >}}
+```sql
+CREATE TABLE paimon_catalog.`default`.users (
+    user_id BIGINT,
+    user_name STRING,
+    created_at TIMESTAMP
+) TBLPROPERTIES (
+    'primary-key' = 'user_id',
+    'metadata.iceberg.storage' = 'hadoop-catalog',
+    'metadata.iceberg.column.user_id.alias' = 'userId',
+    'metadata.iceberg.column.user_name.alias' = 'userName',
+    'metadata.iceberg.column.created_at.alias' = 'createdAt'
+);
+```
+{{< /tab >}}
+
+{{< /tabs >}}
+
+With this configuration, Iceberg readers can query using either the original column names (`user_id`, `user_name`, `created_at`)
+or the aliases (`userId`, `userName`, `createdAt`).
+
 ## Table Options
 
 Options for Iceberg Compatibility.

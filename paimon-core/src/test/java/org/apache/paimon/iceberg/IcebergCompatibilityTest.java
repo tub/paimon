@@ -875,6 +875,102 @@ public class IcebergCompatibilityTest {
     }
 
     // ------------------------------------------------------------------------
+    //  Column Alias Tests
+    // ------------------------------------------------------------------------
+
+    @Test
+    public void testColumnAliasNameMapping() throws Exception {
+        RowType rowType =
+                RowType.of(
+                        new DataType[] {DataTypes.INT(), DataTypes.STRING()},
+                        new String[] {"user_id", "user_name"});
+        Map<String, String> customOptions = new HashMap<>();
+        customOptions.put("metadata.iceberg.column.user_id.alias", "userId");
+        customOptions.put("metadata.iceberg.column.user_name.alias", "userName");
+        FileStoreTable table =
+                createPaimonTable(
+                        rowType,
+                        Collections.emptyList(),
+                        Collections.singletonList("user_id"),
+                        1,
+                        customOptions);
+
+        String commitUser = UUID.randomUUID().toString();
+        TableWriteImpl<?> write = table.newWrite(commitUser);
+        TableCommitImpl commit = table.newCommit(commitUser);
+
+        write.write(GenericRow.of(1, BinaryString.fromString("Alice")));
+        write.write(GenericRow.of(2, BinaryString.fromString("Bob")));
+        commit.commit(1, write.prepareCommit(false, 1));
+
+        write.close();
+        commit.close();
+
+        // Verify that name-mapping property is present in Iceberg metadata
+        FileIO fileIO = table.fileIO();
+        IcebergMetadata metadata =
+                IcebergMetadata.fromPath(
+                        fileIO, new Path(table.location(), "metadata/v1.metadata.json"));
+
+        assertThat(metadata.properties()).containsKey("schema.name-mapping.default");
+        String nameMapping = metadata.properties().get("schema.name-mapping.default");
+
+        // Verify name-mapping contains original names and aliases
+        assertThat(nameMapping).contains("user_id");
+        assertThat(nameMapping).contains("userId");
+        assertThat(nameMapping).contains("user_name");
+        assertThat(nameMapping).contains("userName");
+
+        // Verify we can still read the data via Iceberg
+        assertThat(getIcebergResult())
+                .containsExactlyInAnyOrder("Record(1, Alice)", "Record(2, Bob)");
+    }
+
+    @Test
+    public void testColumnAliasValidationFailsOnNonExistentColumn() throws Exception {
+        RowType rowType =
+                RowType.of(
+                        new DataType[] {DataTypes.INT(), DataTypes.STRING()},
+                        new String[] {"id", "name"});
+        Map<String, String> customOptions = new HashMap<>();
+        customOptions.put("metadata.iceberg.column.non_existent.alias", "alias");
+
+        assertThatThrownBy(
+                        () ->
+                                createPaimonTable(
+                                        rowType,
+                                        Collections.emptyList(),
+                                        Collections.singletonList("id"),
+                                        1,
+                                        customOptions))
+                .hasRootCauseInstanceOf(IllegalArgumentException.class)
+                .hasRootCauseMessage(
+                        "Column 'non_existent' specified in alias configuration does not exist in the schema");
+    }
+
+    @Test
+    public void testColumnAliasValidationFailsOnConflictWithColumn() throws Exception {
+        RowType rowType =
+                RowType.of(
+                        new DataType[] {DataTypes.INT(), DataTypes.STRING()},
+                        new String[] {"id", "name"});
+        Map<String, String> customOptions = new HashMap<>();
+        customOptions.put("metadata.iceberg.column.id.alias", "name"); // "name" already exists
+
+        assertThatThrownBy(
+                        () ->
+                                createPaimonTable(
+                                        rowType,
+                                        Collections.emptyList(),
+                                        Collections.singletonList("id"),
+                                        1,
+                                        customOptions))
+                .hasRootCauseInstanceOf(IllegalArgumentException.class)
+                .hasRootCauseMessage(
+                        "Alias 'name' for column 'id' conflicts with an existing column name");
+    }
+
+    // ------------------------------------------------------------------------
     //  Utils
     // ------------------------------------------------------------------------
 
