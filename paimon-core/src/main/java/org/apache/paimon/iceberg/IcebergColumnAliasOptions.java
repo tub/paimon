@@ -19,6 +19,9 @@
 package org.apache.paimon.iceberg;
 
 import org.apache.paimon.types.DataField;
+import org.apache.paimon.utils.JsonSerdeUtil;
+
+import org.apache.paimon.shade.jackson2.com.fasterxml.jackson.annotation.JsonProperty;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -27,7 +30,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.regex.Pattern;
-import java.util.stream.Collectors;
 
 /**
  * Utility class for handling Iceberg column alias configuration.
@@ -91,24 +93,33 @@ public class IcebergColumnAliasOptions {
      */
     public static String buildNameMapping(
             List<DataField> fields, Map<String, String> columnAliases) {
-        List<String> entries = new ArrayList<>();
+        List<NameMappingEntry> entries = new ArrayList<>();
         for (DataField field : fields) {
-            String fieldName = field.name();
-            int fieldId = field.id();
-
             List<String> names = new ArrayList<>();
-            names.add(fieldName);
+            names.add(field.name());
 
-            String alias = columnAliases.get(fieldName);
-            if (alias != null && !alias.equals(fieldName)) {
+            String alias = columnAliases.get(field.name());
+            if (alias != null && !alias.equals(field.name())) {
                 names.add(alias);
             }
 
-            String namesJson =
-                    names.stream().map(n -> "\"" + n + "\"").collect(Collectors.joining(","));
-            entries.add(String.format("{\"field-id\":%d,\"names\":[%s]}", fieldId, namesJson));
+            entries.add(new NameMappingEntry(field.id(), names));
         }
-        return "[" + String.join(",", entries) + "]";
+        return JsonSerdeUtil.toJson(entries);
+    }
+
+    /** Entry in the Iceberg name-mapping. */
+    private static class NameMappingEntry {
+        @JsonProperty("field-id")
+        final int fieldId;
+
+        @JsonProperty("names")
+        final List<String> names;
+
+        NameMappingEntry(int fieldId, List<String> names) {
+            this.fieldId = fieldId;
+            this.names = names;
+        }
     }
 
     /**
