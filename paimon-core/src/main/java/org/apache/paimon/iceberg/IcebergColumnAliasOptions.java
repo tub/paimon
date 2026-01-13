@@ -41,10 +41,7 @@ import java.util.stream.Collectors;
 public class IcebergColumnAliasOptions {
 
     /** Prefix for column alias options. */
-    public static final String PREFIX = "metadata.iceberg.column.";
-
-    /** Suffix for alias property. */
-    public static final String ALIAS_SUFFIX = ".alias";
+    public static final String PREFIX = "metadata.iceberg.column.alias.";
 
     /** Table property key for name-mapping in Iceberg metadata. */
     public static final String NAME_MAPPING_PROPERTY = "schema.name-mapping.default";
@@ -65,10 +62,9 @@ public class IcebergColumnAliasOptions {
         Map<String, String> aliases = new HashMap<>();
         for (Map.Entry<String, String> entry : options.entrySet()) {
             String key = entry.getKey();
-            if (key.startsWith(PREFIX) && key.endsWith(ALIAS_SUFFIX)) {
-                // Extract column name from: metadata.iceberg.column.<column_name>.alias
-                String columnName =
-                        key.substring(PREFIX.length(), key.length() - ALIAS_SUFFIX.length());
+            if (key.startsWith(PREFIX)) {
+                // Extract column name from: metadata.iceberg.column.alias.<column_name>
+                String columnName = key.substring(PREFIX.length());
                 if (!columnName.isEmpty()) {
                     aliases.put(columnName, entry.getValue());
                 }

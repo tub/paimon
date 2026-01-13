@@ -537,7 +537,7 @@ Paimon Iceberg compatibility currently supports the following data types.
 
 Column aliases are configured using table options with the pattern:
 ```
-metadata.iceberg.column.<column_name>.alias = <alias_value>
+metadata.iceberg.column.alias.<column_name> = <alias_value>
 ```
 
 When aliases are configured, Paimon generates an Iceberg [name-mapping](https://iceberg.apache.org/spec/#name-mapping)
@@ -557,9 +557,9 @@ CREATE TABLE paimon_catalog.`default`.users (
     PRIMARY KEY (user_id) NOT ENFORCED
 ) WITH (
     'metadata.iceberg.storage' = 'hadoop-catalog',
-    'metadata.iceberg.column.user_id.alias' = 'userId',
-    'metadata.iceberg.column.user_name.alias' = 'userName',
-    'metadata.iceberg.column.created_at.alias' = 'createdAt'
+    'metadata.iceberg.column.alias.user_id' = 'userId',
+    'metadata.iceberg.column.alias.user_name' = 'userName',
+    'metadata.iceberg.column.alias.created_at' = 'createdAt'
 );
 ```
 {{< /tab >}}
@@ -573,9 +573,9 @@ CREATE TABLE paimon_catalog.`default`.users (
 ) TBLPROPERTIES (
     'primary-key' = 'user_id',
     'metadata.iceberg.storage' = 'hadoop-catalog',
-    'metadata.iceberg.column.user_id.alias' = 'userId',
-    'metadata.iceberg.column.user_name.alias' = 'userName',
-    'metadata.iceberg.column.created_at.alias' = 'createdAt'
+    'metadata.iceberg.column.alias.user_id' = 'userId',
+    'metadata.iceberg.column.alias.user_name' = 'userName',
+    'metadata.iceberg.column.alias.created_at' = 'createdAt'
 );
 ```
 {{< /tab >}}

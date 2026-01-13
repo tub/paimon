@@ -1487,8 +1487,8 @@ public class IcebergCompatibilityTest {
                         new DataType[] {DataTypes.INT(), DataTypes.STRING()},
                         new String[] {"user_id", "user_name"});
         Map<String, String> customOptions = new HashMap<>();
-        customOptions.put("metadata.iceberg.column.user_id.alias", "userId");
-        customOptions.put("metadata.iceberg.column.user_name.alias", "userName");
+        customOptions.put("metadata.iceberg.column.alias.user_id", "userId");
+        customOptions.put("metadata.iceberg.column.alias.user_name", "userName");
         FileStoreTable table =
                 createPaimonTable(
                         rowType,
@@ -1535,7 +1535,7 @@ public class IcebergCompatibilityTest {
                         new DataType[] {DataTypes.INT(), DataTypes.STRING()},
                         new String[] {"id", "name"});
         Map<String, String> customOptions = new HashMap<>();
-        customOptions.put("metadata.iceberg.column.non_existent.alias", "alias");
+        customOptions.put("metadata.iceberg.column.alias.non_existent", "alias");
 
         assertThatThrownBy(
                         () ->
@@ -1557,7 +1557,7 @@ public class IcebergCompatibilityTest {
                         new DataType[] {DataTypes.INT(), DataTypes.STRING()},
                         new String[] {"id", "name"});
         Map<String, String> customOptions = new HashMap<>();
-        customOptions.put("metadata.iceberg.column.id.alias", "name"); // "name" already exists
+        customOptions.put("metadata.iceberg.column.alias.id", "name"); // "name" already exists
 
         assertThatThrownBy(
                         () ->

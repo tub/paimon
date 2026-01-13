@@ -58,7 +58,7 @@ public class IcebergColumnAliasOptionsTest {
     @Test
     public void testParseSingleAlias() {
         Map<String, String> options = new HashMap<>();
-        options.put("metadata.iceberg.column.user_id.alias", "userId");
+        options.put("metadata.iceberg.column.alias.user_id", "userId");
         Map<String, String> aliases = IcebergColumnAliasOptions.parseAliases(options);
         assertThat(aliases).hasSize(1);
         assertThat(aliases.get("user_id")).isEqualTo("userId");
@@ -67,9 +67,9 @@ public class IcebergColumnAliasOptionsTest {
     @Test
     public void testParseMultipleAliases() {
         Map<String, String> options = new HashMap<>();
-        options.put("metadata.iceberg.column.user_id.alias", "userId");
-        options.put("metadata.iceberg.column.created_at.alias", "createdAt");
-        options.put("metadata.iceberg.column.order_total.alias", "orderTotal");
+        options.put("metadata.iceberg.column.alias.user_id", "userId");
+        options.put("metadata.iceberg.column.alias.created_at", "createdAt");
+        options.put("metadata.iceberg.column.alias.order_total", "orderTotal");
         Map<String, String> aliases = IcebergColumnAliasOptions.parseAliases(options);
         assertThat(aliases).hasSize(3);
         assertThat(aliases.get("user_id")).isEqualTo("userId");
@@ -81,9 +81,9 @@ public class IcebergColumnAliasOptionsTest {
     public void testParseMixedOptions() {
         Map<String, String> options = new HashMap<>();
         options.put("bucket", "4");
-        options.put("metadata.iceberg.column.user_id.alias", "userId");
+        options.put("metadata.iceberg.column.alias.user_id", "userId");
         options.put("metadata.iceberg.storage", "table-location");
-        options.put("metadata.iceberg.column.name.alias", "userName");
+        options.put("metadata.iceberg.column.alias.name", "userName");
         Map<String, String> aliases = IcebergColumnAliasOptions.parseAliases(options);
         assertThat(aliases).hasSize(2);
         assertThat(aliases.get("user_id")).isEqualTo("userId");
