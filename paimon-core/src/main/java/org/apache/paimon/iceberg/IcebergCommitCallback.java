@@ -361,6 +361,7 @@ public class IcebergCommitCallback implements CommitCallback, TagCallback {
                 IntStream.rangeClosed(0, schemaId)
                         .mapToObj(schemaCache::get)
                         .collect(Collectors.toList());
+        Map<String, String> properties = buildMetadataProperties();
         IcebergMetadata metadata =
                 new IcebergMetadata(
                         formatVersion,
@@ -379,6 +380,7 @@ public class IcebergCommitCallback implements CommitCallback, TagCallback {
                                         IcebergPartitionField.FIRST_FIELD_ID - 1),
                         Collections.singletonList(snapshot),
                         (int) snapshotId,
+                        properties,
                         refs);
 
         Path metadataPath = pathFactory.toMetadataPath(snapshotId);
@@ -634,6 +636,10 @@ public class IcebergCommitCallback implements CommitCallback, TagCallback {
                                         entry -> entry.getValue().get(0),
                                         entry -> new IcebergRef(entry.getKey().id())));
 
+        // Merge existing properties with new name-mapping properties
+        Map<String, String> properties = new HashMap<>(baseMetadata.properties());
+        properties.putAll(buildMetadataProperties());
+
         IcebergMetadata metadata =
                 new IcebergMetadata(
                         baseMetadata.formatVersion(),
@@ -647,6 +653,7 @@ public class IcebergCommitCallback implements CommitCallback, TagCallback {
                         baseMetadata.lastPartitionId(),
                         snapshots,
                         (int) snapshotId,
+                        properties,
                         refs);
 
         Path metadataPath = pathFactory.toMetadataPath(snapshotId);
@@ -1250,6 +1257,31 @@ public class IcebergCommitCallback implements CommitCallback, TagCallback {
             return false;
         }
         return true;
+    }
+
+    /**
+     * Build Iceberg metadata properties including name-mapping for column aliases.
+     *
+     * @return properties map with name-mapping if aliases are configured, empty map otherwise
+     */
+    private Map<String, String> buildMetadataProperties() {
+        Map<String, String> tableOptions = table.options();
+        Map<String, String> aliases = IcebergColumnAliasOptions.parseAliases(tableOptions);
+
+        if (aliases.isEmpty()) {
+            return new HashMap<>();
+        }
+
+        // Validate aliases against the current schema
+        IcebergColumnAliasOptions.validateAliases(table.schema().fields(), aliases);
+
+        // Build name-mapping JSON
+        String nameMapping =
+                IcebergColumnAliasOptions.buildNameMapping(table.schema().fields(), aliases);
+
+        Map<String, String> properties = new HashMap<>();
+        properties.put(IcebergColumnAliasOptions.NAME_MAPPING_PROPERTY, nameMapping);
+        return properties;
     }
 
     private class SchemaCache {
