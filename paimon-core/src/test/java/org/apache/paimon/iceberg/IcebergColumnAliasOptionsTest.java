@@ -148,6 +148,22 @@ public class IcebergColumnAliasOptionsTest {
         assertThat(nameMapping).contains("\"names\":[\"email\"]");
     }
 
+    @Test
+    public void testBuildNameMappingEscapesSpecialCharacters() {
+        // Column names with special characters that need JSON escaping
+        List<DataField> fields =
+                Arrays.asList(
+                        new DataField(0, "col\"quote", DataTypes.INT()),
+                        new DataField(1, "col\\backslash", DataTypes.STRING()));
+        Map<String, String> aliases = Collections.emptyMap();
+
+        String nameMapping = IcebergColumnAliasOptions.buildNameMapping(fields, aliases);
+
+        // Verify quotes and backslashes are properly escaped
+        assertThat(nameMapping).contains("\"col\\\"quote\"");
+        assertThat(nameMapping).contains("\"col\\\\backslash\"");
+    }
+
     // ------------------------------------------------------------------------
     //  Validation Tests
     // ------------------------------------------------------------------------

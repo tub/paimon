@@ -585,6 +585,8 @@ CREATE TABLE paimon_catalog.`default`.users (
 With this configuration, Iceberg readers can query using either the original column names (`user_id`, `user_name`, `created_at`)
 or the aliases (`userId`, `userName`, `createdAt`).
 
+**Note:** Column aliases only apply to top-level columns. Nested fields within `ROW`/struct types are not included in the name-mapping.
+
 ## Table Options
 
 Options for Iceberg Compatibility.
