@@ -105,42 +105,10 @@ public class IcebergColumnAliasOptions {
             }
 
             String namesJson =
-                    names.stream()
-                            .map(n -> "\"" + escapeJsonString(n) + "\"")
-                            .collect(Collectors.joining(","));
+                    names.stream().map(n -> "\"" + n + "\"").collect(Collectors.joining(","));
             entries.add(String.format("{\"field-id\":%d,\"names\":[%s]}", fieldId, namesJson));
         }
         return "[" + String.join(",", entries) + "]";
-    }
-
-    /** Escape special characters for JSON string values. */
-    private static String escapeJsonString(String s) {
-        if (s == null) {
-            return "";
-        }
-        StringBuilder sb = new StringBuilder();
-        for (char c : s.toCharArray()) {
-            switch (c) {
-                case '"':
-                    sb.append("\\\"");
-                    break;
-                case '\\':
-                    sb.append("\\\\");
-                    break;
-                case '\n':
-                    sb.append("\\n");
-                    break;
-                case '\r':
-                    sb.append("\\r");
-                    break;
-                case '\t':
-                    sb.append("\\t");
-                    break;
-                default:
-                    sb.append(c);
-            }
-        }
-        return sb.toString();
     }
 
     /**
