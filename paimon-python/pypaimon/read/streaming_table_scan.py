@@ -30,12 +30,15 @@ from pypaimon.common.options.core_options import ChangelogProducer
 from pypaimon.common.predicate import Predicate
 from pypaimon.consumer.consumer import Consumer
 from pypaimon.consumer.consumer_manager import ConsumerManager
+from pypaimon.manifest.manifest_file_manager import ManifestFileManager
 from pypaimon.manifest.manifest_list_manager import ManifestListManager
 from pypaimon.read.plan import Plan
+from pypaimon.read.scanner.append_table_split_generator import AppendTableSplitGenerator
 from pypaimon.read.scanner.changelog_follow_up_scanner import ChangelogFollowUpScanner
 from pypaimon.read.scanner.delta_follow_up_scanner import DeltaFollowUpScanner
 from pypaimon.read.scanner.follow_up_scanner import FollowUpScanner
 from pypaimon.read.scanner.full_starting_scanner import FullStartingScanner
+from pypaimon.read.scanner.primary_key_table_split_generator import PrimaryKeyTableSplitGenerator
 from pypaimon.read.split import Split
 from pypaimon.snapshot.snapshot import Snapshot
 from pypaimon.snapshot.snapshot_manager import SnapshotManager
@@ -87,6 +90,7 @@ class AsyncStreamingTableScan:
         # Initialize managers
         self._snapshot_manager = SnapshotManager(table)
         self._manifest_list_manager = ManifestListManager(table)
+        self._manifest_file_manager = ManifestFileManager(table)
         self._consumer_manager = ConsumerManager(table.file_io, table.table_path)
 
         # Scanner for determining which snapshots to read
@@ -256,23 +260,38 @@ class AsyncStreamingTableScan:
         if not manifest_files:
             return Plan([])
 
-        # Use a simplified scanner for delta reads
-        starting_scanner = FullStartingScanner(
-            self.table,
-            self.predicate,
-            limit=None
+        # Read manifest entries from manifest files
+        entries = self._manifest_file_manager.read_entries_parallel(
+            manifest_files,
+            manifest_entry_filter=None,  # No filtering for delta reads
+            max_workers=8
         )
-        entries = starting_scanner.read_manifest_entries(manifest_files)
 
         if not entries:
             return Plan([])
 
-        # Create splits from entries (simplified - may need more logic)
-        if self.table.is_primary_key_table:
-            splits = starting_scanner._create_primary_key_splits(entries)
-        else:
-            splits = starting_scanner._create_append_only_splits(entries)
+        # Get split options from table
+        options = self.table.options
+        target_split_size = options.source_split_target_size()
+        open_file_cost = options.source_split_open_file_cost()
 
+        # Create appropriate split generator based on table type
+        if self.table.is_primary_key_table:
+            split_generator = PrimaryKeyTableSplitGenerator(
+                self.table,
+                target_split_size,
+                open_file_cost,
+                deletion_files_map={}
+            )
+        else:
+            split_generator = AppendTableSplitGenerator(
+                self.table,
+                target_split_size,
+                open_file_cost,
+                deletion_files_map={}
+            )
+
+        splits = split_generator.create_splits(entries)
         return Plan(splits)
 
     def _create_changelog_plan(self, snapshot: Snapshot) -> Plan:
@@ -288,22 +307,36 @@ class AsyncStreamingTableScan:
         if not manifest_files:
             return Plan([])
 
-        # Use a simplified scanner for changelog reads
-        starting_scanner = FullStartingScanner(
-            self.table,
-            self.predicate,
-            limit=None
+        # Read manifest entries from manifest files
+        entries = self._manifest_file_manager.read_entries_parallel(
+            manifest_files,
+            manifest_entry_filter=None,  # No filtering for changelog reads
+            max_workers=8
         )
-        entries = starting_scanner.read_manifest_entries(manifest_files)
 
         if not entries:
             return Plan([])
 
-        # Create splits from entries
-        # Changelog entries for PK tables use the same split structure
-        if self.table.is_primary_key_table:
-            splits = starting_scanner._create_primary_key_splits(entries)
-        else:
-            splits = starting_scanner._create_append_only_splits(entries)
+        # Get split options from table
+        options = self.table.options
+        target_split_size = options.source_split_target_size()
+        open_file_cost = options.source_split_open_file_cost()
 
+        # Create appropriate split generator based on table type
+        if self.table.is_primary_key_table:
+            split_generator = PrimaryKeyTableSplitGenerator(
+                self.table,
+                target_split_size,
+                open_file_cost,
+                deletion_files_map={}
+            )
+        else:
+            split_generator = AppendTableSplitGenerator(
+                self.table,
+                target_split_size,
+                open_file_cost,
+                deletion_files_map={}
+            )
+
+        splits = split_generator.create_splits(entries)
         return Plan(splits)
