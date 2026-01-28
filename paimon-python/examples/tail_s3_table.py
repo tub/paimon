@@ -29,9 +29,9 @@ from pypaimon.catalog.catalog_factory import CatalogFactory
 
 
 # Configuration
-WAREHOUSE = "s3://yelp-streamhouse-bunsen-private-dev-us-west-2/paimon/warehouse"
-DATABASE = "bunsen.private"  # Database name contains a period
-TABLE = "cal_assignment_logs_v2"
+WAREHOUSE = "s3://streamhouse-mysql-yelp-profile-products-fulfillment-dev/warehouse_v3"
+DATABASE = "yelp_profile_products_fulfillment"  # Database name contains a period
+TABLE = "fulfillment_information"
 # Use backticks to escape database name with period
 TABLE_IDENTIFIER = f"`{DATABASE}`.{TABLE}"
 CONSUMER_ID = "tail-example"  # Persists read progress
@@ -53,9 +53,9 @@ def print_banner():
     print()
 
 
-def format_row(row: dict, max_width: int = 50) -> str:
+def format_row(row: dict, row_kind: str = "+I", max_width: int = 50) -> str:
     """Format a row for display, truncating long values."""
-    parts = []
+    parts = [row_kind]  # Prefix with row kind
     for k, v in row.items():
         v_str = str(v)
         if len(v_str) > max_width:
@@ -160,10 +160,17 @@ async def tail_table():
             # Convert to pandas for easy iteration and display
             df = arrow_table.to_pandas()
 
+            # Determine row kind for display
+            # - Delta reads from append-only tables: all +I
+            # - Delta reads from PK tables: typically +I (new records added in this snapshot)
+            # - Changelog reads would include -U/+U/-D but require reader enhancements
+            # For now, default to +I for delta streaming
+            row_kind = "+I"
+
             # Display rows (limit to first 10 per batch)
             display_limit = 10
             for idx, row in df.head(display_limit).iterrows():
-                print(format_row(row.to_dict()))
+                print(format_row(row.to_dict(), row_kind=row_kind))
 
             if num_rows > display_limit:
                 print(f"  ... and {num_rows - display_limit} more rows")
