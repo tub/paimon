@@ -26,11 +26,13 @@ of Java's DataTableStreamScan.
 import asyncio
 from typing import AsyncIterator, Dict, Iterator, List, Optional
 
+from pypaimon.common.options.core_options import ChangelogProducer
 from pypaimon.common.predicate import Predicate
 from pypaimon.consumer.consumer import Consumer
 from pypaimon.consumer.consumer_manager import ConsumerManager
 from pypaimon.manifest.manifest_list_manager import ManifestListManager
 from pypaimon.read.plan import Plan
+from pypaimon.read.scanner.changelog_follow_up_scanner import ChangelogFollowUpScanner
 from pypaimon.read.scanner.delta_follow_up_scanner import DeltaFollowUpScanner
 from pypaimon.read.scanner.follow_up_scanner import FollowUpScanner
 from pypaimon.read.scanner.full_starting_scanner import FullStartingScanner
@@ -88,7 +90,8 @@ class AsyncStreamingTableScan:
         self._consumer_manager = ConsumerManager(table.file_io, table.table_path)
 
         # Scanner for determining which snapshots to read
-        self.follow_up_scanner = follow_up_scanner or DeltaFollowUpScanner()
+        # Auto-select based on changelog-producer if not explicitly provided
+        self.follow_up_scanner = follow_up_scanner or self._create_follow_up_scanner()
 
         # State tracking
         self.next_snapshot_id: Optional[int] = None
@@ -128,7 +131,7 @@ class AsyncStreamingTableScan:
                 # This ensures next_snapshot_id is correct for checkpointing after yield
                 self.next_snapshot_id += 1
                 if should_scan:
-                    yield self._create_delta_plan(snapshot)
+                    yield self._create_follow_up_plan(snapshot)
             else:
                 # No new snapshot yet, wait and poll again
                 await asyncio.sleep(self.poll_interval)
@@ -190,6 +193,43 @@ class AsyncStreamingTableScan:
                 Consumer(next_snapshot=next_snapshot_id)
             )
 
+    def _create_follow_up_plan(self, snapshot: Snapshot) -> Plan:
+        """
+        Create the appropriate plan for a follow-up scan.
+
+        Uses the changelog plan for ChangelogFollowUpScanner, otherwise delta plan.
+
+        Args:
+            snapshot: The snapshot to create a plan for
+
+        Returns:
+            Plan with splits for reading the snapshot's data
+        """
+        if isinstance(self.follow_up_scanner, ChangelogFollowUpScanner):
+            return self._create_changelog_plan(snapshot)
+        else:
+            return self._create_delta_plan(snapshot)
+
+    def _create_follow_up_scanner(self) -> FollowUpScanner:
+        """
+        Create the appropriate follow-up scanner based on table options.
+
+        For tables with changelog-producer=none (default), use DeltaFollowUpScanner
+        which only scans APPEND commits from delta_manifest_list.
+
+        For tables with changelog-producer=input/full-compaction/lookup, use
+        ChangelogFollowUpScanner which reads from changelog_manifest_list.
+
+        Returns:
+            The appropriate FollowUpScanner for this table's configuration
+        """
+        changelog_producer = self.table.options.changelog_producer()
+        if changelog_producer == ChangelogProducer.NONE:
+            return DeltaFollowUpScanner()
+        else:
+            # INPUT, FULL_COMPACTION, LOOKUP all use changelog scanner
+            return ChangelogFollowUpScanner()
+
     def _create_initial_plan(self, snapshot: Snapshot) -> Plan:
         """
         Create a Plan for the initial full scan.
@@ -207,7 +247,8 @@ class AsyncStreamingTableScan:
         """
         Create a Plan for a delta (incremental) scan.
 
-        Only reads the new files added in this snapshot.
+        Only reads the new files added in this snapshot from delta_manifest_list.
+        Used for tables with changelog-producer=none.
         """
         # Read delta manifest entries
         manifest_files = self._manifest_list_manager.read_delta(snapshot)
@@ -227,6 +268,39 @@ class AsyncStreamingTableScan:
             return Plan([])
 
         # Create splits from entries (simplified - may need more logic)
+        if self.table.is_primary_key_table:
+            splits = starting_scanner._create_primary_key_splits(entries)
+        else:
+            splits = starting_scanner._create_append_only_splits(entries)
+
+        return Plan(splits)
+
+    def _create_changelog_plan(self, snapshot: Snapshot) -> Plan:
+        """
+        Create a Plan for a changelog scan.
+
+        Reads from changelog_manifest_list which contains INSERT/UPDATE/DELETE records.
+        Used for tables with changelog-producer=input/full-compaction/lookup.
+        """
+        # Read changelog manifest entries
+        manifest_files = self._manifest_list_manager.read_changelog(snapshot)
+
+        if not manifest_files:
+            return Plan([])
+
+        # Use a simplified scanner for changelog reads
+        starting_scanner = FullStartingScanner(
+            self.table,
+            self.predicate,
+            limit=None
+        )
+        entries = starting_scanner.read_manifest_entries(manifest_files)
+
+        if not entries:
+            return Plan([])
+
+        # Create splits from entries
+        # Changelog entries for PK tables use the same split structure
         if self.table.is_primary_key_table:
             splits = starting_scanner._create_primary_key_splits(entries)
         else:

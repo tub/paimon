@@ -24,6 +24,7 @@ import asyncio
 import unittest
 from unittest.mock import Mock, patch, MagicMock
 
+from pypaimon.common.options.core_options import ChangelogProducer
 from pypaimon.read.streaming_table_scan import AsyncStreamingTableScan
 from pypaimon.read.plan import Plan
 from pypaimon.snapshot.snapshot import Snapshot
@@ -54,6 +55,7 @@ class AsyncStreamingTableScanTest(unittest.TestCase):
         table.options.bucket.return_value = 1
         table.options.data_evolution_enabled.return_value = False
         table.options.deletion_vectors_enabled.return_value = False
+        table.options.changelog_producer.return_value = ChangelogProducer.NONE
         table.field_names = ['col1', 'col2']
         table.trimmed_primary_keys = []
         table.partition_keys = []

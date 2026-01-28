@@ -51,6 +51,23 @@ class ManifestListManager:
     def read_delta(self, snapshot: Snapshot) -> List[ManifestFileMeta]:
         return self.read(snapshot.delta_manifest_list)
 
+    def read_changelog(self, snapshot: Snapshot) -> List[ManifestFileMeta]:
+        """
+        Read changelog manifest files from snapshot.
+
+        For primary key tables with changelog-producer=input/full-compaction/lookup,
+        changelog files are stored in a separate manifest list.
+
+        Args:
+            snapshot: The snapshot to read changelog from
+
+        Returns:
+            List of ManifestFileMeta for changelog files, or empty list if no changelog
+        """
+        if snapshot.changelog_manifest_list is None:
+            return []
+        return self.read(snapshot.changelog_manifest_list)
+
     def read(self, manifest_list_name: str) -> List[ManifestFileMeta]:
         manifest_files = []
 

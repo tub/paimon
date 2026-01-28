@@ -46,6 +46,21 @@ class MergeEngine(str, Enum):
     FIRST_ROW = "first-row"
 
 
+class ChangelogProducer(str, Enum):
+    """
+    Specifies the changelog producer for tables with primary key.
+
+    - NONE: No changelog file (default for append-only tables)
+    - INPUT: Double write changelog from input
+    - FULL_COMPACTION: Generate changelog with each full compaction
+    - LOOKUP: Generate changelog through lookup compaction
+    """
+    NONE = "none"
+    INPUT = "input"
+    FULL_COMPACTION = "full-compaction"
+    LOOKUP = "lookup"
+
+
 class CoreOptions:
     """Core options for Paimon tables."""
     # File format constants
@@ -243,6 +258,16 @@ class CoreOptions:
         .default_value(MergeEngine.DEDUPLICATE)
         .with_description("Specify the merge engine for table with primary key. "
                           "Options: deduplicate, partial-update, aggregation, first-row.")
+    )
+
+    CHANGELOG_PRODUCER: ConfigOption[ChangelogProducer] = (
+        ConfigOptions.key("changelog-producer")
+        .enum_type(ChangelogProducer)
+        .default_value(ChangelogProducer.NONE)
+        .with_description(
+            "Whether to double write to a changelog file. "
+            "Options: none, input, full-compaction, lookup."
+        )
     )
     # Commit options
     COMMIT_USER_PREFIX: ConfigOption[str] = (
@@ -525,6 +550,9 @@ class CoreOptions:
 
     def merge_engine(self, default=None):
         return self.options.get(CoreOptions.MERGE_ENGINE, default)
+
+    def changelog_producer(self, default=None):
+        return self.options.get(CoreOptions.CHANGELOG_PRODUCER, default)
 
     def data_file_external_paths(self, default=None):
         external_paths_str = self.options.get(CoreOptions.DATA_FILE_EXTERNAL_PATHS, default)
