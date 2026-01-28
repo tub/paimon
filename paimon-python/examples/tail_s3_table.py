@@ -53,9 +53,11 @@ def print_banner():
     print()
 
 
-def format_row(row: dict, row_kind: str = "+I", max_width: int = 50) -> str:
+def format_row(row: dict, row_kind: str = None, max_width: int = 50) -> str:
     """Format a row for display, truncating long values."""
-    parts = [row_kind]  # Prefix with row kind
+    parts = []
+    if row_kind:
+        parts.append(row_kind)  # Prefix with row kind if available
     for k, v in row.items():
         v_str = str(v)
         if len(v_str) > max_width:
@@ -112,6 +114,7 @@ async def tail_table():
     stream_builder = table.new_stream_read_builder()
     stream_builder.with_consumer_id(CONSUMER_ID)
     stream_builder.with_poll_interval_ms(POLL_INTERVAL_MS)
+    stream_builder.with_include_row_kind(True)  # Include row kind (+I, -U, +U, -D) in output
 
     # Create scan and reader
     scan = stream_builder.new_streaming_scan()
@@ -160,17 +163,13 @@ async def tail_table():
             # Convert to pandas for easy iteration and display
             df = arrow_table.to_pandas()
 
-            # Determine row kind for display
-            # - Delta reads from append-only tables: all +I
-            # - Delta reads from PK tables: typically +I (new records added in this snapshot)
-            # - Changelog reads would include -U/+U/-D but require reader enhancements
-            # For now, default to +I for delta streaming
-            row_kind = "+I"
-
             # Display rows (limit to first 10 per batch)
             display_limit = 10
             for idx, row in df.head(display_limit).iterrows():
-                print(format_row(row.to_dict(), row_kind=row_kind))
+                row_dict = row.to_dict()
+                # Extract row kind from _row_kind column (added by with_include_row_kind)
+                row_kind = row_dict.pop('_row_kind', None)
+                print(format_row(row_dict, row_kind=row_kind))
 
             if num_rows > display_limit:
                 print(f"  ... and {num_rows - display_limit} more rows")

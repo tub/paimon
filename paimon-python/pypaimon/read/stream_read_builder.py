@@ -62,6 +62,7 @@ class StreamReadBuilder:
         self._projection: Optional[List[str]] = None
         self._poll_interval_ms: int = 1000
         self._consumer_id: Optional[str] = None
+        self._include_row_kind: bool = False
 
     def with_filter(self, predicate: Predicate) -> 'StreamReadBuilder':
         """
@@ -121,6 +122,26 @@ class StreamReadBuilder:
         self._consumer_id = consumer_id
         return self
 
+    def with_include_row_kind(self, include: bool = True) -> 'StreamReadBuilder':
+        """
+        Include row kind column (_row_kind) in the output.
+
+        When enabled, the output will include a _row_kind column as the first
+        column with values: +I (insert), -U (update before), +U (update after),
+        -D (delete).
+
+        This is useful for changelog streams where you need to distinguish
+        between different types of changes.
+
+        Args:
+            include: Whether to include row kind (default: True)
+
+        Returns:
+            This builder for method chaining
+        """
+        self._include_row_kind = include
+        return self
+
     def new_streaming_scan(self) -> AsyncStreamingTableScan:
         """
         Create a new AsyncStreamingTableScan for continuous streaming reads.
@@ -145,7 +166,8 @@ class StreamReadBuilder:
         return TableRead(
             table=self.table,
             predicate=self._predicate,
-            read_type=self.read_type()
+            read_type=self.read_type(),
+            include_row_kind=self._include_row_kind
         )
 
     def new_predicate_builder(self) -> PredicateBuilder:
