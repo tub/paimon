@@ -63,6 +63,20 @@ class FileStoreTable(Table):
 
         self.schema_manager = SchemaManager(file_io, table_path)
 
+    @property
+    def bucket_count(self) -> int:
+        """
+        Get the number of buckets configured for this table.
+
+        For fixed bucket tables, this is the configured bucket number.
+        For dynamic bucket tables (bucket=-1), this returns -1.
+        For postpone bucket tables (bucket=-2), this returns -2.
+
+        Returns:
+            The bucket count configuration value
+        """
+        return self.total_buckets
+
     @classmethod
     def from_path(cls, table_path: str) -> 'FileStoreTable':
         """

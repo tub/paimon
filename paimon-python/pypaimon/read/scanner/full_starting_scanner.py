@@ -16,7 +16,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 """
 import os
-from typing import List, Optional, Dict, Set
+from typing import Callable, List, Optional, Dict, Set
 
 from pypaimon.common.predicate import Predicate
 from pypaimon.globalindex import VectorSearchGlobalIndexResult
@@ -44,7 +44,10 @@ class FullStartingScanner(StartingScanner):
         table,
         predicate: Optional[Predicate],
         limit: Optional[int],
-        vector_search: Optional['VectorSearch'] = None
+        vector_search: Optional['VectorSearch'] = None,
+        shard_index: Optional[int] = None,
+        shard_count: Optional[int] = None,
+        bucket_filter: Optional[Callable[[int], bool]] = None
     ):
         from pypaimon.table.file_store_table import FileStoreTable
 
@@ -52,6 +55,11 @@ class FullStartingScanner(StartingScanner):
         self.predicate = predicate
         self.limit = limit
         self.vector_search = vector_search
+
+        # Bucket-level sharding for parallel consumption
+        self._shard_index = shard_index
+        self._shard_count = shard_count
+        self._bucket_filter = bucket_filter
 
         self.snapshot_manager = SnapshotManager(table)
         self.manifest_list_manager = ManifestListManager(table)
@@ -269,6 +277,13 @@ class FullStartingScanner(StartingScanner):
             return False
         if self.deletion_vectors_enabled and entry.file.level == 0:  # do not read level 0 file
             return False
+        # Apply bucket-level sharding for parallel consumption
+        if self._shard_index is not None and self._shard_count is not None:
+            if entry.bucket % self._shard_count != self._shard_index:
+                return False
+        elif self._bucket_filter is not None:
+            if not self._bucket_filter(entry.bucket):
+                return False
         # Get SimpleStatsEvolution for this schema
         evolution = self.simple_stats_evolutions.get_or_create(entry.file.schema_id)
 

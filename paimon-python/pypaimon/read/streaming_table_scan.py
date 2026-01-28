@@ -24,7 +24,7 @@ of Java's DataTableStreamScan.
 """
 
 import asyncio
-from typing import AsyncIterator, Dict, Iterator, List, Optional
+from typing import AsyncIterator, Callable, Dict, Iterator, List, Optional
 
 from pypaimon.common.options.core_options import ChangelogProducer
 from pypaimon.common.predicate import Predicate
@@ -70,7 +70,10 @@ class AsyncStreamingTableScan:
         predicate: Optional[Predicate] = None,
         poll_interval_ms: int = 1000,
         follow_up_scanner: Optional[FollowUpScanner] = None,
-        consumer_id: Optional[str] = None
+        consumer_id: Optional[str] = None,
+        shard_index: Optional[int] = None,
+        shard_count: Optional[int] = None,
+        bucket_filter: Optional[Callable[[int], bool]] = None
     ):
         """
         Initialize the streaming table scan.
@@ -81,11 +84,19 @@ class AsyncStreamingTableScan:
             poll_interval_ms: How often to poll for new snapshots (milliseconds)
             follow_up_scanner: Scanner for follow-up reads (default: DeltaFollowUpScanner)
             consumer_id: Optional consumer ID for persisting read progress
+            shard_index: Index of this consumer for sharded reads (0 to shard_count-1)
+            shard_count: Total number of parallel consumers
+            bucket_filter: Custom bucket filter function (alternative to sharding)
         """
         self.table = table
         self.predicate = predicate
         self.poll_interval = poll_interval_ms / 1000.0
         self.consumer_id = consumer_id
+
+        # Sharding configuration for parallel consumption
+        self._shard_index = shard_index
+        self._shard_count = shard_count
+        self._bucket_filter = bucket_filter
 
         # Initialize managers
         self._snapshot_manager = SnapshotManager(table)
@@ -234,16 +245,44 @@ class AsyncStreamingTableScan:
             # INPUT, FULL_COMPACTION, LOOKUP all use changelog scanner
             return ChangelogFollowUpScanner()
 
+    def _filter_entries_for_shard(self, entries: List) -> List:
+        """
+        Filter manifest entries to only those for this shard/bucket filter.
+
+        This implements the Java pattern from SnapshotReaderImpl.withShard():
+        - For sharding: bucket % shard_count == shard_index
+        - For bucket filter: apply the custom filter function
+
+        Args:
+            entries: List of ManifestEntry objects to filter
+
+        Returns:
+            Filtered list of ManifestEntry objects
+        """
+        if self._shard_index is not None and self._shard_count is not None:
+            # Shard-based filtering: bucket % N == index
+            return [e for e in entries if e.bucket % self._shard_count == self._shard_index]
+        elif self._bucket_filter is not None:
+            # Custom bucket filter
+            return [e for e in entries if self._bucket_filter(e.bucket)]
+        # No filtering
+        return entries
+
     def _create_initial_plan(self, snapshot: Snapshot) -> Plan:
         """
         Create a Plan for the initial full scan.
 
         Uses FullStartingScanner to read all data from the snapshot.
+        Note: Initial scan does not apply shard filtering - each consumer
+        starts from the same snapshot. Sharding only applies to follow-up scans.
         """
         starting_scanner = FullStartingScanner(
             self.table,
             self.predicate,
-            limit=None
+            limit=None,
+            shard_index=self._shard_index,
+            shard_count=self._shard_count,
+            bucket_filter=self._bucket_filter
         )
         return starting_scanner.scan()
 
@@ -266,6 +305,12 @@ class AsyncStreamingTableScan:
             manifest_entry_filter=None,  # No filtering for delta reads
             max_workers=8
         )
+
+        if not entries:
+            return Plan([])
+
+        # Apply shard/bucket filtering for parallel consumption
+        entries = self._filter_entries_for_shard(entries)
 
         if not entries:
             return Plan([])
@@ -313,6 +358,12 @@ class AsyncStreamingTableScan:
             manifest_entry_filter=None,  # No filtering for changelog reads
             max_workers=8
         )
+
+        if not entries:
+            return Plan([])
+
+        # Apply shard/bucket filtering for parallel consumption
+        entries = self._filter_entries_for_shard(entries)
 
         if not entries:
             return Plan([])
