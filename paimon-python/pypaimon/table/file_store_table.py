@@ -24,6 +24,7 @@ from pypaimon.common.file_io import FileIO
 from pypaimon.common.identifier import Identifier
 from pypaimon.common.options.options import Options
 from pypaimon.read.read_builder import ReadBuilder
+from pypaimon.read.stream_read_builder import StreamReadBuilder
 from pypaimon.schema.schema_manager import SchemaManager
 from pypaimon.schema.table_schema import TableSchema
 from pypaimon.table.bucket_mode import BucketMode
@@ -157,6 +158,9 @@ class FileStoreTable(Table):
             snapshot_manager=self.snapshot_manager(),
             index_file_handler=IndexFileHandler(table=self)
         )
+
+    def new_stream_read_builder(self) -> 'StreamReadBuilder':
+        return StreamReadBuilder(self)
 
     def new_batch_write_builder(self) -> BatchWriteBuilder:
         return BatchWriteBuilder(self)
