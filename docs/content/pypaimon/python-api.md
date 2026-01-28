@@ -521,6 +521,118 @@ Key points about shard read:
 - **Parallel Processing**: Each shard can be processed independently for better performance
 - **Consistency**: Combining all shards should produce the complete table data
 
+## Streaming Read
+
+Streaming reads allow you to continuously read new data as it arrives in a Paimon table. This is useful for building
+real-time data pipelines and ETL jobs.
+
+### Basic Streaming Read
+
+Use `StreamReadBuilder` to create a streaming scan that continuously polls for new snapshots:
+
+```python
+table = catalog.get_table('database_name.table_name')
+
+# Create streaming read builder
+stream_builder = table.new_stream_read_builder()
+stream_builder.with_poll_interval_ms(1000)  # Poll every 1 second
+
+# Create streaming scan and table read
+scan = stream_builder.new_streaming_scan()
+table_read = stream_builder.new_read()
+
+# Async streaming (recommended for ETL pipelines)
+import asyncio
+
+async def process_stream():
+    async for plan in scan.stream():
+        for split in plan.splits():
+            arrow_batch = table_read.to_arrow([split])
+            # Process the data
+            print(f"Received {arrow_batch.num_rows} rows")
+
+asyncio.run(process_stream())
+```
+
+### Synchronous Streaming
+
+For simpler use cases, you can use the synchronous wrapper:
+
+```python
+# Synchronous streaming
+for plan in scan.stream_sync():
+    arrow_table = table_read.to_arrow(plan.splits())
+    process(arrow_table)
+```
+
+### Consumer Registration
+
+Consumer registration persists read progress to the table, enabling:
+- Cross-process recovery of read progress
+- Snapshot expiration awareness (prevents deletion of snapshots still needed by consumers)
+- Multiple independent consumers tracking their own progress
+
+```python
+# Create streaming read with consumer registration
+stream_builder = table.new_stream_read_builder()
+stream_builder.with_consumer_id("my-etl-job")
+stream_builder.with_poll_interval_ms(500)
+
+scan = stream_builder.new_streaming_scan()
+table_read = stream_builder.new_read()
+
+async def process_with_checkpointing():
+    async for plan in scan.stream():
+        # Process the data
+        arrow_table = table_read.to_arrow(plan.splits())
+        process(arrow_table)
+
+        # Persist progress to {table_path}/consumer/consumer-my-etl-job
+        scan.notify_checkpoint_complete(scan.next_snapshot_id)
+
+asyncio.run(process_with_checkpointing())
+```
+
+When restarting with the same consumer ID, reading automatically resumes from the last checkpointed position.
+
+### Checkpointing and Recovery
+
+You can also manually checkpoint and restore state without consumer registration:
+
+```python
+# Save checkpoint
+checkpoint = scan.checkpoint()
+# checkpoint = {"next_snapshot_id": 42}
+
+# Later, restore from checkpoint
+scan.restore(checkpoint)
+```
+
+### Filtering Streaming Data
+
+You can apply predicates and projections to streaming reads:
+
+```python
+stream_builder = table.new_stream_read_builder()
+
+# Build predicate
+predicate_builder = stream_builder.new_predicate_builder()
+predicate = predicate_builder.greater_than('timestamp', 1704067200000)
+
+# Apply filter and projection
+stream_builder.with_filter(predicate)
+stream_builder.with_projection(['id', 'name', 'timestamp'])
+
+scan = stream_builder.new_streaming_scan()
+```
+
+Key points about streaming reads:
+
+- **Poll Interval**: Controls how often to check for new snapshots (default: 1000ms)
+- **Consumer ID**: Unique identifier for persisting read progress
+- **Initial Scan**: First iteration returns all existing data, subsequent iterations return only new data
+- **Commit Types**: By default, only APPEND commits are processed; COMPACT and OVERWRITE are skipped
+
 ## Data Types
 
 | Python Native Type  | PyArrow Type                                     | Paimon Type                       |
@@ -585,3 +697,4 @@ The following shows the supported features of Python Paimon compared to Java Pai
       - Incremental reading of Delta data
       - Reading and writing blob data
       - `with_shard` feature
+      - Streaming reads with consumer registration
