@@ -22,10 +22,14 @@ Streams data from a Paimon table, similar to kafka-console-consumer.
 """
 
 import asyncio
+import cProfile
+import pstats
 import signal
 import sys
+import time
 from argparse import Namespace
 from datetime import datetime
+from io import StringIO
 from typing import Any, Dict, Optional
 
 from pypaimon.catalog.catalog_factory import CatalogFactory
@@ -36,6 +40,37 @@ from pypaimon.cli.utils import (
     OutputFormatter,
 )
 from pypaimon.snapshot.snapshot_manager import SnapshotManager
+
+
+class Timer:
+    """Simple timer for profiling."""
+
+    def __init__(self):
+        self.timings = {}
+        self._start = None
+        self._current_phase = None
+
+    def start(self, phase: str):
+        self._current_phase = phase
+        self._start = time.perf_counter()
+
+    def stop(self):
+        if self._start and self._current_phase:
+            elapsed = time.perf_counter() - self._start
+            if self._current_phase not in self.timings:
+                self.timings[self._current_phase] = {"total": 0, "count": 0}
+            self.timings[self._current_phase]["total"] += elapsed
+            self.timings[self._current_phase]["count"] += 1
+        self._start = None
+        self._current_phase = None
+
+    def report(self) -> str:
+        lines = ["", "=== Timing Report ==="]
+        for phase, data in sorted(self.timings.items(), key=lambda x: -x[1]["total"]):
+            avg = data["total"] / data["count"] if data["count"] > 0 else 0
+            lines.append(f"  {phase}: {data['total']:.3f}s total, "
+                        f"{data['count']} calls, {avg*1000:.1f}ms avg")
+        return "\n".join(lines)
 
 
 def print_banner(args: Namespace, verbose: bool = False) -> None:
@@ -82,19 +117,29 @@ async def tail_async(args: Namespace) -> int:
         Exit code (0 for success)
     """
     verbose = args.verbose
+    profile = getattr(args, 'profile', False)
+    timer = Timer() if profile else None
 
     print_banner(args, verbose)
 
     # Create catalog
     log("Connecting to catalog...", verbose)
+    if timer:
+        timer.start("catalog_create")
     catalog = CatalogFactory.create({
         "warehouse": args.warehouse,
         "metastore": "filesystem",
     })
+    if timer:
+        timer.stop()
 
     # Get table
     log(f"Getting table: {args.table}", verbose)
+    if timer:
+        timer.start("get_table")
     table = catalog.get_table(args.table)
+    if timer:
+        timer.stop()
 
     log(f"Schema: {[f.name for f in table.fields]}", verbose)
 
@@ -132,13 +177,13 @@ async def tail_async(args: Namespace) -> int:
     if args.from_pos != 'latest':
         start_snapshot_id = parse_start_position(args.from_pos, snapshot_mgr)
         if start_snapshot_id:
-            scan.restore({"next_snapshot_id": start_snapshot_id})
+            scan.next_snapshot_id = start_snapshot_id
             log(f"Starting from snapshot {start_snapshot_id}", verbose)
     else:
         # For 'latest', start from latest+1 (skip existing data)
         latest = snapshot_mgr.get_latest_snapshot()
         if latest:
-            scan.restore({"next_snapshot_id": latest.id + 1})
+            scan.next_snapshot_id = latest.id + 1
             log(f"Starting from latest (snapshot {latest.id + 1})", verbose)
 
     log("Streaming started (Ctrl+C to stop)...", verbose)
@@ -149,10 +194,28 @@ async def tail_async(args: Namespace) -> int:
     formatter: OutputFormatter = get_formatter(args.output)
     total_rows = 0
     limit = args.limit
+    snapshots_processed = 0
 
     try:
-        async for plan in scan.stream():
+        stream_iter = scan.stream().__aiter__()
+        while True:
+            # Time the plan creation (includes snapshot read + manifest reads)
+            if timer:
+                timer.start("scan_next_plan")
+            try:
+                plan = await stream_iter.__anext__()
+            except StopAsyncIteration:
+                if timer:
+                    timer.stop()
+                break
+            if timer:
+                timer.stop()
+
+            if timer:
+                timer.start("get_splits")
             splits = plan.splits()
+            if timer:
+                timer.stop()
 
             if not splits:
                 if not args.follow:
@@ -161,22 +224,41 @@ async def tail_async(args: Namespace) -> int:
                 continue
 
             # Read data from splits
+            if timer:
+                timer.start("read_to_arrow")
             arrow_table = table_read.to_arrow(splits)
+            if timer:
+                timer.stop()
+
             num_rows = arrow_table.num_rows
 
             if num_rows == 0:
                 continue
 
             # Convert to list of dicts and output
-            for row in arrow_table.to_pylist():
+            if timer:
+                timer.start("to_pylist")
+            rows = arrow_table.to_pylist()
+            if timer:
+                timer.stop()
+
+            if timer:
+                timer.start("format_output")
+            for row in rows:
                 formatter.write(row)
                 total_rows += 1
 
                 if limit and total_rows >= limit:
+                    if timer:
+                        timer.stop()
                     return 0
+            if timer:
+                timer.stop()
 
             # Flush stdout for real-time output
             sys.stdout.flush()
+
+            snapshots_processed += 1
 
             # Checkpoint if consumer_id is set (best effort)
             if args.consumer_id:
@@ -199,6 +281,23 @@ async def tail_async(args: Namespace) -> int:
         if verbose:
             print("-" * 70, file=sys.stderr)
             print(f"Total: {total_rows} rows", file=sys.stderr)
+
+        if profile:
+            print(timer.report(), file=sys.stderr)
+            print(f"\n=== Cache Stats ===", file=sys.stderr)
+            # Get cache stats from the managers
+            mfm = scan._manifest_file_manager
+            mlm = scan._manifest_list_manager
+            sm = scan._snapshot_manager
+            sm_stats = sm.get_cache_stats()
+            print(f"  Snapshot:     {sm_stats['cache_hits']} hits, {sm_stats['cache_misses']} misses", file=sys.stderr)
+            print(f"  ManifestFile: {mfm._cache_hits} hits, {mfm._cache_misses} misses", file=sys.stderr)
+            print(f"  ManifestList: {mlm._cache_hits} hits, {mlm._cache_misses} misses", file=sys.stderr)
+            print(f"\n=== Prefetch & Lookahead Stats ===", file=sys.stderr)
+            print(f"  Prefetch: {scan._prefetch_hits} hits, {scan._prefetch_misses} misses", file=sys.stderr)
+            print(f"  Lookahead skips: {scan._lookahead_skips} (non-scannable snapshots skipped)", file=sys.stderr)
+            print(f"  Diff-based catch-up: {'used' if scan._diff_catch_up_used else 'not used'}", file=sys.stderr)
+            print(f"\n  Snapshots processed: {snapshots_processed}", file=sys.stderr)
 
     return 0
 

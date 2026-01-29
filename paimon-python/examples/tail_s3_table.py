@@ -123,11 +123,11 @@ async def tail_table():
     # Set starting snapshot ID
     if START_SNAPSHOT_ID is not None:
         # Resume from specific snapshot
-        scan.restore({"next_snapshot_id": START_SNAPSHOT_ID})
+        scan.next_snapshot_id = START_SNAPSHOT_ID
         print(f"[{datetime.now().strftime('%H:%M:%S')}] Resuming from snapshot {START_SNAPSHOT_ID}")
     elif SKIP_INITIAL_SCAN and scan.next_snapshot_id is None and latest:
         # Skip initial full scan - just tail from latest+1
-        scan.restore({"next_snapshot_id": latest.id + 1})
+        scan.next_snapshot_id = latest.id + 1
         print(f"[{datetime.now().strftime('%H:%M:%S')}] Skipping initial scan, starting from snapshot {latest.id + 1}")
 
     print(f"[{datetime.now().strftime('%H:%M:%S')}] Starting to tail (Ctrl+C to stop)...")

@@ -267,24 +267,6 @@ class AsyncStreamingTableScan:
         finally:
             loop.close()
 
-    def checkpoint(self) -> Dict:
-        """
-        Get the current checkpoint state.
-
-        Returns:
-            Dictionary with checkpoint state, including next_snapshot_id
-        """
-        return {"next_snapshot_id": self.next_snapshot_id}
-
-    def restore(self, checkpoint: Dict) -> None:
-        """
-        Restore state from a checkpoint.
-
-        Args:
-            checkpoint: Dictionary containing checkpoint state
-        """
-        self.next_snapshot_id = checkpoint.get("next_snapshot_id")
-
     def notify_checkpoint_complete(self, next_snapshot_id: int) -> None:
         """
         Notify that a checkpoint has completed successfully.

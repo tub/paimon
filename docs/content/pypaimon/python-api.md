@@ -595,17 +595,19 @@ asyncio.run(process_with_checkpointing())
 
 When restarting with the same consumer ID, reading automatically resumes from the last checkpointed position.
 
-### Checkpointing and Recovery
+### Manual Position Control
 
-You can also manually checkpoint and restore state without consumer registration:
+You can directly read and set the scan position via `next_snapshot_id`:
 
 ```python
-# Save checkpoint
-checkpoint = scan.checkpoint()
-# checkpoint = {"next_snapshot_id": 42}
+# Save current position
+saved_position = scan.next_snapshot_id
 
-# Later, restore from checkpoint
-scan.restore(checkpoint)
+# Later, restore position
+scan.next_snapshot_id = saved_position
+
+# Or start from a specific snapshot
+scan.next_snapshot_id = 42
 ```
 
 ### Filtering Streaming Data
