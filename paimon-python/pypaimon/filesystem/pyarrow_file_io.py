@@ -207,6 +207,29 @@ class PyArrowFileIO(FileIO):
         file_info = self.filesystem.get_file_info([path_str])[0]
         return file_info.type != pyarrow.fs.FileType.NotFound
 
+    def exists_batch(self, paths: List[str]) -> Dict[str, bool]:
+        """
+        Check existence of multiple paths in one S3 API call.
+
+        This is more efficient than calling exists() for each path individually
+        as it batches the file info requests.
+
+        Args:
+            paths: List of file paths to check
+
+        Returns:
+            Dictionary mapping each path to its existence status
+        """
+        if not paths:
+            return {}
+
+        path_strs = [self.to_filesystem_path(p) for p in paths]
+        file_infos = self.filesystem.get_file_info(path_strs)
+        return {
+            paths[i]: info.type != pyarrow.fs.FileType.NotFound
+            for i, info in enumerate(file_infos)
+        }
+
     def delete(self, path: str, recursive: bool = False) -> bool:
         path_str = self.to_filesystem_path(path)
         file_info = self.filesystem.get_file_info([path_str])[0]
