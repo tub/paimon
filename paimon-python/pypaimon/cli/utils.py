@@ -299,18 +299,37 @@ class CsvFormatter(OutputFormatter):
 
 
 class TableFormatter(OutputFormatter):
-    """Output formatter for ASCII table format."""
+    """Output formatter for ASCII table format.
+
+    Warning: This formatter buffers all rows in memory before rendering.
+    For large result sets, consider using --output jsonl or --output csv instead,
+    or use --limit to cap the number of rows.
+    """
+
+    # Warn user when buffered rows exceed this threshold
+    MEMORY_WARNING_THRESHOLD = 10000
 
     def __init__(self, output: TextIO = None, max_col_width: int = 30):
         self.output = output or sys.stdout
         self.max_col_width = max_col_width
         self.rows: List[Dict[str, Any]] = []
         self.columns: Optional[List[str]] = None
+        self._memory_warning_shown = False
 
     def write(self, row: Dict[str, Any]) -> None:
         if self.columns is None:
             self.columns = list(row.keys())
         self.rows.append(row)
+
+        # Warn once when buffer gets large
+        if not self._memory_warning_shown and len(self.rows) == self.MEMORY_WARNING_THRESHOLD:
+            self._memory_warning_shown = True
+            print(
+                f"Warning: Table output has buffered {self.MEMORY_WARNING_THRESHOLD} rows in memory. "
+                "Consider using --output jsonl or --output csv for large result sets, "
+                "or use --limit to cap output.",
+                file=sys.stderr
+            )
 
     def close(self) -> None:
         if not self.rows or not self.columns:

@@ -24,6 +24,8 @@ of Java's DataTableStreamScan.
 """
 
 import asyncio
+import os
+from concurrent.futures import Future, ThreadPoolExecutor
 from typing import AsyncIterator, Callable, Dict, Iterator, List, Optional
 
 from pypaimon.common.options.core_options import ChangelogProducer
@@ -38,6 +40,7 @@ from pypaimon.read.scanner.changelog_follow_up_scanner import ChangelogFollowUpS
 from pypaimon.read.scanner.delta_follow_up_scanner import DeltaFollowUpScanner
 from pypaimon.read.scanner.follow_up_scanner import FollowUpScanner
 from pypaimon.read.scanner.full_starting_scanner import FullStartingScanner
+from pypaimon.read.scanner.incremental_diff_scanner import IncrementalDiffScanner
 from pypaimon.read.scanner.primary_key_table_split_generator import PrimaryKeyTableSplitGenerator
 from pypaimon.read.split import Split
 from pypaimon.snapshot.snapshot import Snapshot
@@ -73,7 +76,9 @@ class AsyncStreamingTableScan:
         consumer_id: Optional[str] = None,
         shard_index: Optional[int] = None,
         shard_count: Optional[int] = None,
-        bucket_filter: Optional[Callable[[int], bool]] = None
+        bucket_filter: Optional[Callable[[int], bool]] = None,
+        prefetch_enabled: bool = True,
+        diff_threshold: int = 10
     ):
         """
         Initialize the streaming table scan.
@@ -87,6 +92,8 @@ class AsyncStreamingTableScan:
             shard_index: Index of this consumer for sharded reads (0 to shard_count-1)
             shard_count: Total number of parallel consumers
             bucket_filter: Custom bucket filter function (alternative to sharding)
+            prefetch_enabled: Enable prefetching of next snapshot plan (default: True)
+            diff_threshold: Number of snapshots gap before using diff approach (default: 10)
         """
         self.table = table
         self.predicate = predicate
@@ -97,6 +104,21 @@ class AsyncStreamingTableScan:
         self._shard_index = shard_index
         self._shard_count = shard_count
         self._bucket_filter = bucket_filter
+
+        # Diff-based catch-up configuration
+        self._diff_threshold = diff_threshold
+        self._catch_up_in_progress = False
+
+        # Prefetching configuration
+        self._prefetch_enabled = prefetch_enabled
+        self._prefetch_future: Optional[Future] = None
+        self._prefetch_snapshot_id: Optional[int] = None
+        self._prefetch_hits = 0
+        self._prefetch_misses = 0
+        self._lookahead_skips = 0  # Track how many snapshots were skipped via lookahead
+        self._prefetch_executor = ThreadPoolExecutor(max_workers=1) if prefetch_enabled else None
+        self._lookahead_size = 10  # How many snapshots to look ahead
+        self._diff_catch_up_used = False  # Track if diff-based catch-up was used
 
         # Initialize managers
         self._snapshot_manager = SnapshotManager(table)
@@ -125,6 +147,17 @@ class AsyncStreamingTableScan:
         On first call, performs an initial full scan of the latest snapshot.
         Subsequent iterations poll for new snapshots and yield delta Plans.
 
+        Uses batch lookahead to efficiently skip non-scannable snapshots
+        (e.g., COMPACT commits) by fetching multiple snapshot metadata in
+        parallel and finding the next scannable one.
+
+        When prefetching is enabled (default), the next snapshot's plan is
+        fetched in the background while the current plan is being processed,
+        reducing latency between snapshots.
+
+        When starting from an earlier snapshot (e.g., --from earliest) with
+        a large gap to latest, uses diff-based scanning for efficient catch-up.
+
         Yields:
             Plan objects containing splits for reading
         """
@@ -136,20 +169,82 @@ class AsyncStreamingTableScan:
                 yield self._create_initial_plan(latest_snapshot)
                 self._initialized = True
 
-        # Follow-up polling loop
-        while True:
-            snapshot = self._snapshot_manager.get_snapshot_by_id(self.next_snapshot_id)
+        # Check for catch-up scenario: starting from earlier snapshot with large gap
+        # This handles --from earliest or --from snapshot:X with many snapshots to process
+        if self._should_use_diff_catch_up():
+            self._catch_up_in_progress = True
+            self._diff_catch_up_used = True
+            try:
+                latest_snapshot = self._snapshot_manager.get_latest_snapshot()
+                if latest_snapshot and self.next_snapshot_id:
+                    catch_up_plan = self._create_catch_up_plan(
+                        self.next_snapshot_id,
+                        latest_snapshot
+                    )
+                    self.next_snapshot_id = latest_snapshot.id + 1
+                    self._initialized = True
+                    if catch_up_plan.splits():
+                        yield catch_up_plan
+            finally:
+                self._catch_up_in_progress = False
 
-            if snapshot is not None:
-                should_scan = self.follow_up_scanner.should_scan(snapshot)
-                # Always increment first, even if we skip (to avoid getting stuck)
-                # This ensures next_snapshot_id is correct for checkpointing after yield
-                self.next_snapshot_id += 1
-                if should_scan:
-                    yield self._create_follow_up_plan(snapshot)
-            else:
-                # No new snapshot yet, wait and poll again
+        # Follow-up polling loop with lookahead and optional prefetching
+        while True:
+            plan = None
+            snapshot_processed = False  # Track if we processed (or skipped) a snapshot
+
+            # Check if we have a prefetched result ready
+            prefetch_used = False
+            if self._prefetch_future is not None:
+                try:
+                    # Wait for the prefetch thread to complete
+                    # Returns (plan, next_id, skipped_count) tuple
+                    prefetch_result = self._prefetch_future.result(timeout=30)
+                    prefetch_used = True
+
+                    if prefetch_result is not None:
+                        prefetch_plan, next_id, skipped_count = prefetch_result
+                        self._lookahead_skips += skipped_count
+                        self.next_snapshot_id = next_id
+                        snapshot_processed = skipped_count > 0 or prefetch_plan is not None
+
+                        if prefetch_plan is not None:
+                            plan = prefetch_plan
+                            self._prefetch_hits += 1
+                except Exception:
+                    # Prefetch failed, fall back to synchronous
+                    prefetch_used = False
+                finally:
+                    self._prefetch_future = None
+                    self._prefetch_snapshot_id = None
+
+            # If prefetch wasn't available or failed, use lookahead to find next scannable
+            if not prefetch_used:
+                self._prefetch_misses += 1
+                # Use batch lookahead to find the next scannable snapshot
+                snapshot, next_id, skipped_count = self._snapshot_manager.find_next_scannable(
+                    self.next_snapshot_id,
+                    self.follow_up_scanner.should_scan,
+                    lookahead_size=self._lookahead_size
+                )
+                self._lookahead_skips += skipped_count
+                self.next_snapshot_id = next_id
+
+                # Check if we found a scannable snapshot or skipped some
+                snapshot_processed = skipped_count > 0 or snapshot is not None
+
+                if snapshot is not None:
+                    plan = self._create_follow_up_plan(snapshot)
+
+            if plan is not None:
+                # Start prefetching next scannable snapshot before yielding
+                if self._prefetch_enabled:
+                    self._start_prefetch(self.next_snapshot_id)
+                yield plan
+            elif not snapshot_processed:
+                # No snapshot available yet, wait and poll again
                 await asyncio.sleep(self.poll_interval)
+            # If snapshots were processed but plan is None (all skipped), continue loop immediately
 
     def stream_sync(self) -> Iterator[Plan]:
         """
@@ -207,6 +302,55 @@ class AsyncStreamingTableScan:
                 self.consumer_id,
                 Consumer(next_snapshot=next_snapshot_id)
             )
+
+    def _start_prefetch(self, snapshot_id: int) -> None:
+        """
+        Start prefetching the next scannable snapshot in a background thread.
+
+        This uses batch lookahead to find the next scannable snapshot,
+        skipping non-scannable ones (e.g., COMPACT commits) efficiently.
+        The work starts immediately in a thread pool, running in parallel
+        with the consumer's processing of the current plan.
+
+        Args:
+            snapshot_id: The starting snapshot ID to search from
+        """
+        if self._prefetch_future is not None or self._prefetch_executor is None:
+            return  # Already prefetching or executor not available
+
+        self._prefetch_snapshot_id = snapshot_id
+        # Submit to thread pool - this starts immediately, not when event loop runs
+        self._prefetch_future = self._prefetch_executor.submit(
+            self._fetch_plan_with_lookahead,
+            snapshot_id
+        )
+
+    def _fetch_plan_with_lookahead(self, start_id: int) -> Optional[tuple]:
+        """
+        Find the next scannable snapshot using lookahead and create a plan for it.
+
+        This method is designed to run in a thread pool executor.
+
+        Args:
+            start_id: The starting snapshot ID to search from
+
+        Returns:
+            Tuple of (plan, next_id, skipped_count), or None on error
+        """
+        try:
+            snapshot, next_id, skipped_count = self._snapshot_manager.find_next_scannable(
+                start_id,
+                self.follow_up_scanner.should_scan,
+                lookahead_size=self._lookahead_size
+            )
+
+            if snapshot is None:
+                return (None, next_id, skipped_count)
+
+            plan = self._create_follow_up_plan(snapshot)
+            return (plan, next_id, skipped_count)
+        except Exception:
+            return None
 
     def _create_follow_up_plan(self, snapshot: Snapshot) -> Plan:
         """
@@ -293,51 +437,8 @@ class AsyncStreamingTableScan:
         Only reads the new files added in this snapshot from delta_manifest_list.
         Used for tables with changelog-producer=none.
         """
-        # Read delta manifest entries
         manifest_files = self._manifest_list_manager.read_delta(snapshot)
-
-        if not manifest_files:
-            return Plan([])
-
-        # Read manifest entries from manifest files
-        entries = self._manifest_file_manager.read_entries_parallel(
-            manifest_files,
-            manifest_entry_filter=None,  # No filtering for delta reads
-            max_workers=8
-        )
-
-        if not entries:
-            return Plan([])
-
-        # Apply shard/bucket filtering for parallel consumption
-        entries = self._filter_entries_for_shard(entries)
-
-        if not entries:
-            return Plan([])
-
-        # Get split options from table
-        options = self.table.options
-        target_split_size = options.source_split_target_size()
-        open_file_cost = options.source_split_open_file_cost()
-
-        # Create appropriate split generator based on table type
-        if self.table.is_primary_key_table:
-            split_generator = PrimaryKeyTableSplitGenerator(
-                self.table,
-                target_split_size,
-                open_file_cost,
-                deletion_files_map={}
-            )
-        else:
-            split_generator = AppendTableSplitGenerator(
-                self.table,
-                target_split_size,
-                open_file_cost,
-                deletion_files_map={}
-            )
-
-        splits = split_generator.create_splits(entries)
-        return Plan(splits)
+        return self._create_plan_from_manifests(manifest_files)
 
     def _create_changelog_plan(self, snapshot: Snapshot) -> Plan:
         """
@@ -346,17 +447,33 @@ class AsyncStreamingTableScan:
         Reads from changelog_manifest_list which contains INSERT/UPDATE/DELETE records.
         Used for tables with changelog-producer=input/full-compaction/lookup.
         """
-        # Read changelog manifest entries
         manifest_files = self._manifest_list_manager.read_changelog(snapshot)
+        return self._create_plan_from_manifests(manifest_files)
 
+    def _create_plan_from_manifests(self, manifest_files: List) -> Plan:
+        """
+        Create a Plan from manifest files.
+
+        Common implementation for delta and changelog plans. Reads manifest entries,
+        applies shard filtering, and creates splits.
+
+        Args:
+            manifest_files: List of manifest files to read entries from
+
+        Returns:
+            Plan with splits for reading the manifest entries
+        """
         if not manifest_files:
             return Plan([])
+
+        # Use configurable parallelism from table options
+        max_workers = max(8, self.table.options.scan_manifest_parallelism(os.cpu_count() or 8))
 
         # Read manifest entries from manifest files
         entries = self._manifest_file_manager.read_entries_parallel(
             manifest_files,
-            manifest_entry_filter=None,  # No filtering for changelog reads
-            max_workers=8
+            manifest_entry_filter=None,
+            max_workers=max_workers
         )
 
         if not entries:
@@ -391,3 +508,76 @@ class AsyncStreamingTableScan:
 
         splits = split_generator.create_splits(entries)
         return Plan(splits)
+
+    def _should_use_diff_catch_up(self) -> bool:
+        """
+        Check if diff-based catch-up should be used.
+
+        Returns True if:
+        - next_snapshot_id is set (restored from checkpoint)
+        - Gap to latest snapshot exceeds _diff_threshold
+        - Not already in catch-up mode (to avoid recursion)
+
+        Returns:
+            True if diff-based catch-up should be used
+        """
+        if self._catch_up_in_progress:
+            return False
+
+        if self.next_snapshot_id is None:
+            return False
+
+        latest = self._snapshot_manager.get_latest_snapshot()
+        if latest is None:
+            return False
+
+        gap = latest.id - self.next_snapshot_id
+        return gap > self._diff_threshold
+
+    def _create_catch_up_plan(self, start_id: int, end_snapshot: Snapshot) -> Plan:
+        """
+        Create a catch-up plan using diff-based scanning.
+
+        Reads base_manifest_list from start and end snapshots, computes the
+        file-level diff, and returns a Plan with all added files.
+
+        This is more efficient than reading N delta_manifest_lists when
+        there are many snapshots to catch up.
+
+        Args:
+            start_id: Starting snapshot ID (exclusive - files here are NOT included)
+            end_snapshot: Ending snapshot (inclusive - files here ARE included)
+
+        Returns:
+            Plan with splits for all files added between start and end
+        """
+        # Get start snapshot (one before where we want to start reading)
+        # If start_id is 0 or 1, use None to indicate "from beginning"
+        start_snapshot = None
+        if start_id > 1:
+            start_snapshot = self._snapshot_manager.get_snapshot_by_id(start_id - 1)
+
+        # Create diff scanner
+        diff_scanner = IncrementalDiffScanner(self.table)
+
+        if start_snapshot is None:
+            # No start snapshot - return all files from end snapshot
+            # This is equivalent to a full scan of end snapshot
+            starting_scanner = FullStartingScanner(
+                self.table,
+                self.predicate,
+                limit=None,
+                shard_index=self._shard_index,
+                shard_count=self._shard_count,
+                bucket_filter=self._bucket_filter
+            )
+            # Override the snapshot manager's latest to use end_snapshot
+            original_latest = starting_scanner.snapshot_manager.get_latest_snapshot
+            starting_scanner.snapshot_manager.get_latest_snapshot = lambda: end_snapshot
+            try:
+                return starting_scanner.scan()
+            finally:
+                starting_scanner.snapshot_manager.get_latest_snapshot = original_latest
+        else:
+            # Use diff scanner for efficient catch-up
+            return diff_scanner.scan(start_snapshot, end_snapshot)

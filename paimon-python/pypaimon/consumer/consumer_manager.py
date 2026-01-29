@@ -50,6 +50,28 @@ class ConsumerManager:
         self._file_io = file_io
         self._table_path = table_path
 
+    @staticmethod
+    def _validate_consumer_id(consumer_id: str) -> None:
+        """
+        Validate consumer ID to prevent path traversal attacks.
+
+        Args:
+            consumer_id: The consumer identifier to validate
+
+        Raises:
+            ValueError: If consumer_id contains path separators or is empty
+        """
+        if not consumer_id:
+            raise ValueError("consumer_id cannot be empty")
+        if '/' in consumer_id or '\\' in consumer_id:
+            raise ValueError(
+                f"consumer_id cannot contain path separators: {consumer_id}"
+            )
+        if consumer_id in ('.', '..'):
+            raise ValueError(
+                f"consumer_id cannot be a relative path component: {consumer_id}"
+            )
+
     def _consumer_path(self, consumer_id: str) -> str:
         """
         Get the path to a consumer file.
@@ -59,7 +81,11 @@ class ConsumerManager:
 
         Returns:
             Path to the consumer file: {table_path}/consumer/consumer-{id}
+
+        Raises:
+            ValueError: If consumer_id is invalid
         """
+        self._validate_consumer_id(consumer_id)
         return os.path.join(
             self._table_path,
             "consumer",
