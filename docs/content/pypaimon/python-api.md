@@ -633,6 +633,140 @@ Key points about streaming reads:
 - **Initial Scan**: First iteration returns all existing data, subsequent iterations return only new data
 - **Commit Types**: By default, only APPEND commits are processed; COMPACT and OVERWRITE are skipped
 
+### Parallel Consumption
+
+For high-throughput streaming, you can run multiple consumers in parallel, each reading a disjoint subset of buckets.
+This is similar to Kafka consumer groups.
+
+**Using `with_shard()` (recommended)**:
+
+```python
+import multiprocessing
+
+def run_consumer(consumer_index: int, total_consumers: int):
+    table = catalog.get_table('database.table')
+
+    stream_builder = table.new_stream_read_builder()
+    # Each consumer reads buckets where bucket % N == index
+    stream_builder.with_shard(consumer_index, total_consumers)
+    stream_builder.with_consumer_id(f"parallel-consumer-{consumer_index}")
+
+    scan = stream_builder.new_streaming_scan()
+    table_read = stream_builder.new_read()
+
+    for plan in scan.stream_sync():
+        arrow_table = table_read.to_arrow(plan.splits())
+        process(arrow_table)
+
+# Run 4 parallel consumers
+for i in range(4):
+    p = multiprocessing.Process(target=run_consumer, args=(i, 4))
+    p.start()
+```
+
+**Using `with_buckets()` for explicit bucket assignment**:
+
+```python
+# Consumer 0 reads buckets 0, 1, 2
+stream_builder.with_buckets([0, 1, 2])
+
+# Consumer 1 reads buckets 3, 4, 5
+stream_builder.with_buckets([3, 4, 5])
+```
+
+**Using `with_bucket_filter()` for custom filtering**:
+
+```python
+# Read only even buckets
+stream_builder.with_bucket_filter(lambda b: b % 2 == 0)
+```
+
+### Row Kind Support
+
+For changelog streams, you can include the row kind to distinguish between inserts, updates, and deletes:
+
+```python
+stream_builder = table.new_stream_read_builder()
+stream_builder.with_include_row_kind(True)
+
+scan = stream_builder.new_streaming_scan()
+table_read = stream_builder.new_read()
+
+async for plan in scan.stream():
+    arrow_table = table_read.to_arrow(plan.splits())
+    for row in arrow_table.to_pylist():
+        row_kind = row['_row_kind']  # +I, -U, +U, or -D
+        if row_kind == '+I':
+            handle_insert(row)
+        elif row_kind == '-D':
+            handle_delete(row)
+        elif row_kind in ('-U', '+U'):
+            handle_update(row)
+```
+
+Row kind values:
+- `+I`: Insert
+- `-U`: Update before (old value)
+- `+U`: Update after (new value)
+- `-D`: Delete
+
+## Command Line Interface
+
+PyPaimon includes a CLI tool for quick data exploration and debugging.
+
+### Installation
+
+The CLI is installed automatically with PyPaimon:
+
+```bash
+pip install pypaimon
+```
+
+### paimon tail
+
+Stream data from a Paimon table, similar to `kafka-console-consumer`:
+
+```bash
+# Tail latest data (wait for new records)
+paimon tail s3://bucket/warehouse database.table --follow
+
+# Start from earliest snapshot
+paimon tail s3://bucket/warehouse database.table --from earliest
+
+# Start from specific snapshot
+paimon tail s3://bucket/warehouse database.table --from snapshot:12345
+
+# Start from 1 hour ago
+paimon tail s3://bucket/warehouse database.table --from time:-1h
+
+# Output as CSV with specific columns
+paimon tail s3://bucket/warehouse database.table -o csv -c id,name,timestamp
+
+# Filter records
+paimon tail s3://bucket/warehouse database.table -f status=active -f amount>100
+
+# Limit output
+paimon tail s3://bucket/warehouse database.table -n 100
+
+# With consumer ID for checkpointing
+paimon tail s3://bucket/warehouse database.table --consumer-id my-consumer --follow
+```
+
+**Options**:
+
+| Option | Description |
+|:-------|:------------|
+| `--from`, `-s` | Start position: `earliest`, `latest`, `snapshot:ID`, `time:TIMESTAMP` |
+| `--output`, `-o` | Output format: `jsonl` (default), `json`, `csv`, `table` |
+| `--filter`, `-f` | Filter expression (repeatable): `col=val`, `col>val`, `col~prefix` |
+| `--columns`, `-c` | Columns to output (comma-separated) |
+| `--limit`, `-n` | Exit after N records |
+| `--follow`, `-F` | Keep waiting for new data |
+| `--poll-interval` | Poll interval in milliseconds (default: 1000) |
+| `--consumer-id` | Consumer ID for checkpointing |
+| `--include-row-kind` | Include `_row_kind` column |
+| `--verbose`, `-v` | Print status messages to stderr |
+
 ## Data Types
 
 | Python Native Type  | PyArrow Type                                     | Paimon Type                       |
@@ -698,3 +832,7 @@ The following shows the supported features of Python Paimon compared to Java Pai
       - Reading and writing blob data
       - `with_shard` feature
       - Streaming reads with consumer registration
+      - Parallel consumption with bucket sharding
+      - Row kind support for changelog streams
+  - Command Line Interface
+      - `paimon tail` for streaming reads
