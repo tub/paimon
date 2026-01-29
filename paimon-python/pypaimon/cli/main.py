@@ -43,10 +43,21 @@ def setup_tail_parser(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         '--from', '-s',
         dest='from_pos',
-        default='latest',
+        default=None,
         help=(
-            'Start position: earliest, latest, snapshot:ID, '
-            'time:TIMESTAMP (e.g., time:-1h, time:2024-01-15)'
+            'Start position: earliest, latest, snapshot ID, timestamp, or relative time '
+            '(e.g., 12345, -1h, -30m, -7d, 2024-01-15, 2024-01-15T10:30:00). '
+            'Default: earliest (or latest if --follow is set)'
+        )
+    )
+    parser.add_argument(
+        '--to', '-e',
+        dest='to_pos',
+        default=None,
+        help=(
+            'End position: latest, snapshot ID, timestamp, or relative time '
+            '(e.g., 12345, -1h, 2024-01-15). Default: latest. '
+            'Mutually exclusive with --follow'
         )
     )
     parser.add_argument(
@@ -74,7 +85,7 @@ def setup_tail_parser(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         '--follow', '-F',
         action='store_true',
-        help='Keep waiting for new data (like tail -f)'
+        help='Keep waiting for new data (like tail -f). Mutually exclusive with --to'
     )
     parser.add_argument(
         '--poll-interval',
@@ -125,6 +136,18 @@ def main() -> int:
     args = parser.parse_args()
 
     if args.command == 'tail':
+        # Validate mutual exclusion of --follow and --to
+        if args.follow and args.to_pos:
+            parser.error('--follow and --to are mutually exclusive')
+
+        # Apply defaults for --from based on --follow
+        if args.from_pos is None:
+            args.from_pos = 'latest' if args.follow else 'earliest'
+
+        # Apply default for --to
+        if args.to_pos is None:
+            args.to_pos = 'latest'
+
         from pypaimon.cli.tail import run_tail
         return run_tail(args)
 

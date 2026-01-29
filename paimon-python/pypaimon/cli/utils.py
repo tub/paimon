@@ -190,15 +190,77 @@ def parse_timestamp(ts_str: str) -> int:
     raise ValueError(f"Invalid timestamp: {ts_str}")
 
 
+def parse_position(pos: str, snapshot_manager) -> Optional[int]:
+    """
+    Parse a position string into snapshot ID.
+
+    Supported positions:
+        earliest        : First available snapshot
+        latest          : Latest snapshot (returns None)
+        12345           : Specific snapshot ID (numeric)
+        snapshot:12345  : Specific snapshot ID (explicit prefix)
+        -1h, -30m, -7d  : Relative time (hours, minutes, days ago)
+        2024-01-15      : ISO date
+        2024-01-15T10:30:00 : ISO datetime
+        time:<timestamp>: Timestamp with explicit prefix
+
+    Args:
+        pos: Position string
+        snapshot_manager: SnapshotManager instance
+
+    Returns:
+        Snapshot ID, or None for latest
+
+    Raises:
+        ValueError: If format is invalid
+    """
+    if pos == 'earliest':
+        snap = snapshot_manager.try_get_earliest_snapshot()
+        return snap.id if snap else 1
+
+    elif pos == 'latest':
+        return None
+
+    # Explicit snapshot: prefix
+    elif pos.startswith('snapshot:'):
+        return int(pos.split(':')[1])
+
+    # Explicit time: prefix
+    elif pos.startswith('time:'):
+        ts = parse_timestamp(pos.split(':', 1)[1])
+        snap = snapshot_manager.earlier_or_equal_time_mills(ts)
+        if snap:
+            return snap.id
+        # No snapshot found at or before timestamp - use earliest
+        earliest = snapshot_manager.try_get_earliest_snapshot()
+        return earliest.id if earliest else 1
+
+    # Numeric snapshot ID
+    elif pos.isdigit():
+        return int(pos)
+
+    # Relative time (-1h, -30m, -7d) or ISO date/datetime
+    else:
+        try:
+            ts = parse_timestamp(pos)
+            snap = snapshot_manager.earlier_or_equal_time_mills(ts)
+            if snap:
+                return snap.id
+            # No snapshot found at or before timestamp - use earliest
+            earliest = snapshot_manager.try_get_earliest_snapshot()
+            return earliest.id if earliest else 1
+        except ValueError:
+            raise ValueError(
+                f"Invalid position: {pos}. Expected: earliest, latest, snapshot ID, "
+                f"relative time (-1h, -30m, -7d), or ISO date/datetime"
+            )
+
+
 def parse_start_position(pos: str, snapshot_manager) -> Optional[int]:
     """
     Parse start position string into snapshot ID.
 
-    Supported positions:
-        earliest        : First available snapshot
-        latest          : Latest snapshot, then follow (returns None)
-        snapshot:12345  : Specific snapshot ID
-        time:<timestamp>: Find snapshot by timestamp
+    See parse_position() for supported formats.
 
     Args:
         pos: Start position string
@@ -210,23 +272,26 @@ def parse_start_position(pos: str, snapshot_manager) -> Optional[int]:
     Raises:
         ValueError: If format is invalid
     """
-    if pos == 'earliest':
-        snap = snapshot_manager.try_get_earliest_snapshot()
-        return snap.id if snap else 1
+    return parse_position(pos, snapshot_manager)
 
-    elif pos == 'latest':
-        # Return None to indicate "start from latest snapshot + 1"
-        return None
 
-    elif pos.startswith('snapshot:'):
-        return int(pos.split(':')[1])
+def parse_end_position(pos: str, snapshot_manager) -> Optional[int]:
+    """
+    Parse end position string into snapshot ID.
 
-    elif pos.startswith('time:'):
-        ts = parse_timestamp(pos.split(':', 1)[1])
-        snap = snapshot_manager.earlier_or_equal_time_mills(ts)
-        return snap.id if snap else 1
+    See parse_position() for supported formats.
 
-    raise ValueError(f"Invalid start position: {pos}")
+    Args:
+        pos: End position string
+        snapshot_manager: SnapshotManager instance
+
+    Returns:
+        Snapshot ID to end at (inclusive), or None for latest
+
+    Raises:
+        ValueError: If format is invalid
+    """
+    return parse_position(pos, snapshot_manager)
 
 
 # -----------------------------------------------------------------------------

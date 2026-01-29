@@ -37,6 +37,7 @@ from pypaimon.cli.utils import (
     get_formatter,
     parse_filters,
     parse_start_position,
+    parse_end_position,
     OutputFormatter,
 )
 from pypaimon.snapshot.snapshot_manager import SnapshotManager
@@ -84,7 +85,8 @@ def print_banner(args: Namespace, verbose: bool = False) -> None:
     print(f"  Table: {args.table}", file=sys.stderr)
     if args.consumer_id:
         print(f"  Consumer ID: {args.consumer_id}", file=sys.stderr)
-    print(f"  Start: {args.from_pos}", file=sys.stderr)
+    print(f"  From: {args.from_pos}", file=sys.stderr)
+    print(f"  To: {args.to_pos}", file=sys.stderr)
     print(f"  Output: {args.output}", file=sys.stderr)
     if args.filters:
         print(f"  Filters: {args.filters}", file=sys.stderr)
@@ -186,6 +188,13 @@ async def tail_async(args: Namespace) -> int:
             scan.next_snapshot_id = latest.id + 1
             log(f"Starting from latest (snapshot {latest.id + 1})", verbose)
 
+    # Determine end position (None means "latest" - keep going until caught up)
+    end_snapshot_id: Optional[int] = parse_end_position(args.to_pos, snapshot_mgr)
+    if end_snapshot_id:
+        log(f"Ending at snapshot {end_snapshot_id}", verbose)
+    else:
+        log("Ending at latest snapshot", verbose)
+
     log("Streaming started (Ctrl+C to stop)...", verbose)
     if verbose:
         print("-" * 70, file=sys.stderr)
@@ -219,8 +228,13 @@ async def tail_async(args: Namespace) -> int:
 
             if not splits:
                 if not args.follow:
-                    # No more data and not following - exit
-                    break
+                    # Check if we've reached end position or caught up
+                    if end_snapshot_id:
+                        if scan.next_snapshot_id and scan.next_snapshot_id > end_snapshot_id:
+                            break
+                    else:
+                        # No more data and not following - exit
+                        break
                 continue
 
             # Read data from splits
@@ -268,10 +282,16 @@ async def tail_async(args: Namespace) -> int:
                     pass  # Ignore checkpoint failures
 
             if not args.follow:
-                # Check if we've caught up
-                latest = snapshot_mgr.get_latest_snapshot()
-                if latest and scan.next_snapshot_id and scan.next_snapshot_id > latest.id:
-                    break
+                # Check if we've reached the end position or caught up
+                if end_snapshot_id:
+                    # Stop if we've passed the end snapshot
+                    if scan.next_snapshot_id and scan.next_snapshot_id > end_snapshot_id:
+                        break
+                else:
+                    # No end position specified - stop when caught up to latest
+                    latest = snapshot_mgr.get_latest_snapshot()
+                    if latest and scan.next_snapshot_id and scan.next_snapshot_id > latest.id:
+                        break
 
     except KeyboardInterrupt:
         if verbose:
