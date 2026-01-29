@@ -96,6 +96,11 @@ def setup_tail_parser(parser: argparse.ArgumentParser) -> None:
         action='store_true',
         help='Print status messages to stderr'
     )
+    parser.add_argument(
+        '--profile',
+        action='store_true',
+        help='Enable profiling output'
+    )
 
 
 def main() -> int:
