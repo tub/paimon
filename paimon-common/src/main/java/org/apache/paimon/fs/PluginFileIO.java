@@ -86,6 +86,11 @@ public abstract class PluginFileIO implements FileIO {
         return wrap(() -> fileIO(src).rename(src, dst));
     }
 
+    @Override
+    public boolean tryToWriteAtomic(Path path, String content) throws IOException {
+        return wrap(() -> fileIO(path).tryToWriteAtomic(path, content));
+    }
+
     private FileIO fileIO(Path path) throws IOException {
         if (lazyFileIO == null) {
             synchronized (this) {

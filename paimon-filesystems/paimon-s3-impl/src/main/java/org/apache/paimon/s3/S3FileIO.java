@@ -26,8 +26,10 @@ import org.apache.paimon.options.Options;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataOutputStream;
+import org.apache.hadoop.fs.FSDataOutputStreamBuilder;
 import org.apache.hadoop.fs.FileAlreadyExistsException;
 import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.fs.s3a.RemoteFileChangedException;
 import org.apache.hadoop.fs.s3a.S3AFileSystem;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -88,11 +90,6 @@ public class S3FileIO extends HadoopCompliantFileIO {
                 new S3MultiPartUpload(fs, fs.getConf()), hadoopPath, path);
     }
 
-    @Override
-    public boolean supportsConditionalWrite() {
-        return true;
-    }
-
     /**
      * Write content atomically using S3 conditional writes via Hadoop 3.4+ native API.
      *
@@ -102,20 +99,18 @@ public class S3FileIO extends HadoopCompliantFileIO {
      * @throws IOException on I/O errors
      */
     @Override
-    public boolean tryToWriteAtomicIfAbsent(Path path, String content) throws IOException {
+    public boolean tryToWriteAtomic(Path path, String content) throws IOException {
         org.apache.hadoop.fs.Path hadoopPath = path(path);
         S3AFileSystem fs = (S3AFileSystem) getFileSystem(hadoopPath);
 
         byte[] contentBytes = content.getBytes(StandardCharsets.UTF_8);
 
-        try (FSDataOutputStream out =
-                fs.createFile(hadoopPath)
-                        .create()
-                        .overwrite(false) // Fails if file exists (uses If-None-Match: * on S3)
-                        .build()) {
+        FSDataOutputStreamBuilder builder = fs.createFile(hadoopPath).create().overwrite(false);
+        builder.opt("fs.option.create.conditional.overwrite", true);
+        try (FSDataOutputStream out = builder.build()) {
             out.write(contentBytes);
             return true;
-        } catch (FileAlreadyExistsException e) {
+        } catch (FileAlreadyExistsException | RemoteFileChangedException e) {
             LOG.debug("Conditional write failed, file already exists: {}", path);
             return false;
         }

@@ -65,17 +65,25 @@ public class AzureFileIO extends HadoopCompliantFileIO {
         return true;
     }
 
+    /**
+     * Write content atomically using Azure conditional writes.
+     *
+     * @param path the target file path
+     * @param content the content to write
+     * @return true if write succeeded, false if file already exists
+     * @throws IOException on I/O errors
+     */
     @Override
-    public boolean supportsConditionalWrite() {
-        return true;
-    }
-
-    @Override
-    public boolean tryToWriteAtomicIfAbsent(Path path, String content) throws IOException {
+    public boolean tryToWriteAtomic(Path path, String content) throws IOException {
         org.apache.hadoop.fs.Path hadoopPath = path(path);
         FileSystem fs = getFileSystem(hadoopPath);
         byte[] bytes = content.getBytes(StandardCharsets.UTF_8);
-        try (FSDataOutputStream out = fs.createFile(hadoopPath).create().overwrite(false).build()) {
+        try (FSDataOutputStream out =
+                fs.createFile(hadoopPath)
+                        .create()
+                        .overwrite(false)
+                        .opt("fs.option.create.conditional.overwrite", true)
+                        .build()) {
             out.write(bytes);
             return true;
         } catch (FileAlreadyExistsException e) {

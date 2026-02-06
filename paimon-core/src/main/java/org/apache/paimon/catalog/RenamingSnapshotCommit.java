@@ -32,8 +32,8 @@ import java.util.concurrent.Callable;
  * A {@link SnapshotCommit} using file renaming to commit.
  *
  * <p>Note that when the file system is local or HDFS, rename is atomic. But if the file system is
- * object storage, we need additional lock protection unless the storage supports native conditional
- * writes.
+ * object storage, we need additional lock protection. For S3, the lock is not needed because {@code
+ * S3FileIO} overrides {@link FileIO#tryToWriteAtomic} with conditional writes.
  */
 public class RenamingSnapshotCommit implements SnapshotCommit {
 
@@ -55,17 +55,6 @@ public class RenamingSnapshotCommit implements SnapshotCommit {
                         ? snapshotManager.snapshotPath(snapshot.id())
                         : snapshotManager.copyWithBranch(branch).snapshotPath(snapshot.id());
 
-        // Use native conditional writes if supported
-        // This eliminates the need for external locking on object stores like S3
-        if (fileIO.supportsConditionalWrite()) {
-            boolean committed = fileIO.tryToWriteAtomicIfAbsent(newSnapshotPath, snapshot.toJson());
-            if (committed) {
-                snapshotManager.commitLatestHint(snapshot.id());
-            }
-            return committed;
-        }
-
-        // Fall back to lock-based approach for filesystems without conditional write support
         Callable<Boolean> callable =
                 () -> {
                     boolean committed = fileIO.tryToWriteAtomic(newSnapshotPath, snapshot.toJson());

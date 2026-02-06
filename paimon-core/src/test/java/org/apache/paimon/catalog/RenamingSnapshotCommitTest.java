@@ -49,25 +49,22 @@ public class RenamingSnapshotCommitTest {
     }
 
     @Test
-    public void testConditionalWritePathSkipsLock() throws Exception {
-        ConditionalWriteFileIO fileIO = new ConditionalWriteFileIO();
-        RenamingSnapshotCommit commit = newCommit(fileIO, Lock.empty());
+    public void testCommitSucceeds() throws Exception {
+        RenamingSnapshotCommit commit = newCommit(LocalFileIO.create(), Lock.empty());
 
         assertThat(commit.commit(newSnapshot(1), "main", Collections.emptyList())).isTrue();
-        assertThat(fileIO.conditionalWriteCalls.get()).isEqualTo(1);
     }
 
     @Test
-    public void testConditionalWriteFailsOnConflict() throws Exception {
-        ConditionalWriteFileIO fileIO = new ConditionalWriteFileIO();
-        RenamingSnapshotCommit commit = newCommit(fileIO, Lock.empty());
+    public void testCommitFailsOnConflict() throws Exception {
+        RenamingSnapshotCommit commit = newCommit(LocalFileIO.create(), Lock.empty());
 
         assertThat(commit.commit(newSnapshot(1), "main", Collections.emptyList())).isTrue();
         assertThat(commit.commit(newSnapshot(1), "main", Collections.emptyList())).isFalse();
     }
 
     @Test
-    public void testFallbackPathUsesLock() throws Exception {
+    public void testCommitUsesLock() throws Exception {
         AtomicInteger lockCalls = new AtomicInteger();
         RenamingSnapshotCommit commit = newCommit(LocalFileIO.create(), trackingLock(lockCalls));
 
@@ -76,13 +73,14 @@ public class RenamingSnapshotCommitTest {
     }
 
     @Test
-    public void testFallbackPathFailsOnConflict() throws Exception {
-        AtomicInteger lockCalls = new AtomicInteger();
-        RenamingSnapshotCommit commit = newCommit(LocalFileIO.create(), trackingLock(lockCalls));
+    public void testConditionalWriteOverrideUsedByCommit() throws Exception {
+        ConditionalWriteFileIO fileIO = new ConditionalWriteFileIO();
+        RenamingSnapshotCommit commit = newCommit(fileIO, Lock.empty());
 
         assertThat(commit.commit(newSnapshot(1), "main", Collections.emptyList())).isTrue();
+        assertThat(fileIO.atomicWriteCalls.get()).isEqualTo(1);
+
         assertThat(commit.commit(newSnapshot(1), "main", Collections.emptyList())).isFalse();
-        assertThat(lockCalls.get()).isEqualTo(2);
     }
 
     private RenamingSnapshotCommit newCommit(LocalFileIO fileIO, Lock lock) {
@@ -108,16 +106,11 @@ public class RenamingSnapshotCommitTest {
     }
 
     private static class ConditionalWriteFileIO extends LocalFileIO {
-        final AtomicInteger conditionalWriteCalls = new AtomicInteger();
+        final AtomicInteger atomicWriteCalls = new AtomicInteger();
 
         @Override
-        public boolean supportsConditionalWrite() {
-            return true;
-        }
-
-        @Override
-        public boolean tryToWriteAtomicIfAbsent(Path path, String content) throws IOException {
-            conditionalWriteCalls.incrementAndGet();
+        public boolean tryToWriteAtomic(Path path, String content) throws IOException {
+            atomicWriteCalls.incrementAndGet();
             if (exists(path)) {
                 return false;
             }

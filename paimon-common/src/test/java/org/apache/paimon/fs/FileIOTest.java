@@ -48,13 +48,12 @@ import static org.assertj.core.api.Assertions.assertThat;
 public class FileIOTest {
 
     @Test
-    public void testConditionalWriteDefaults(@TempDir java.nio.file.Path tempDir) throws Exception {
+    public void testTryToWriteAtomic(@TempDir java.nio.file.Path tempDir) throws Exception {
         FileIO fileIO = new DummyFileIO();
         Path file = new Path(tempDir.resolve("test.txt").toUri());
 
-        assertThat(fileIO.supportsConditionalWrite()).isFalse();
-        assertThat(fileIO.tryToWriteAtomicIfAbsent(file, "first")).isTrue();
-        assertThat(fileIO.tryToWriteAtomicIfAbsent(file, "second")).isFalse();
+        assertThat(fileIO.tryToWriteAtomic(file, "first")).isTrue();
+        assertThat(fileIO.tryToWriteAtomic(file, "second")).isFalse();
         assertThat(fileIO.readFileUtf8(file)).isEqualTo("first");
     }
 
