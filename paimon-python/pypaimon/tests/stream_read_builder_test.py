@@ -88,10 +88,12 @@ class TestStreamReadBuilderValidation:
         """Test method chaining works correctly."""
         result = (builder
                   .with_poll_interval_ms(500)
+                  .with_consumer_id("test-consumer")
                   .with_bucket_filter(lambda b: b % 2 == 0)
                   .with_include_row_kind(True))
         assert result is builder
         assert builder._poll_interval_ms == 500
+        assert builder._consumer_id == "test-consumer"
         assert builder._bucket_filter is not None
         assert builder._include_row_kind is True
 

@@ -30,6 +30,8 @@ from typing import AsyncIterator, Callable, Iterator, List, Optional
 
 from pypaimon.common.options.core_options import ChangelogProducer
 from pypaimon.common.predicate import Predicate
+from pypaimon.consumer.consumer import Consumer
+from pypaimon.consumer.consumer_manager import ConsumerManager
 from pypaimon.manifest.manifest_file_manager import ManifestFileManager
 from pypaimon.manifest.manifest_list_manager import ManifestListManager
 from pypaimon.read.plan import Plan
@@ -74,6 +76,7 @@ class AsyncStreamingTableScan:
         predicate: Optional[Predicate] = None,
         poll_interval_ms: int = 1000,
         follow_up_scanner: Optional[FollowUpScanner] = None,
+        consumer_id: Optional[str] = None,
         bucket_filter: Optional[Callable[[int], bool]] = None,
         prefetch_enabled: bool = True,
         diff_threshold: int = 10
@@ -86,6 +89,7 @@ class AsyncStreamingTableScan:
             predicate: Optional predicate for filtering data
             poll_interval_ms: How often to poll for new snapshots (milliseconds)
             follow_up_scanner: Scanner for follow-up reads (default: DeltaFollowUpScanner)
+            consumer_id: Optional consumer ID for persisting read progress
             bucket_filter: Custom bucket filter function for parallel consumption
             prefetch_enabled: Enable prefetching of next snapshot plan (default: True)
             diff_threshold: Number of snapshots gap before using diff approach (default: 10)
@@ -93,6 +97,7 @@ class AsyncStreamingTableScan:
         self.table = table
         self.predicate = predicate
         self.poll_interval = poll_interval_ms / 1000.0
+        self.consumer_id = consumer_id
 
         # Bucket filter for parallel consumption
         self._bucket_filter = bucket_filter
@@ -116,6 +121,7 @@ class AsyncStreamingTableScan:
         self._snapshot_manager = SnapshotManager(table)
         self._manifest_list_manager = ManifestListManager(table)
         self._manifest_file_manager = ManifestFileManager(table)
+        self._consumer_manager = ConsumerManager(table.file_io, table.table_path)
 
         # Scanner for determining which snapshots to read
         # Auto-select based on changelog-producer if not explicitly provided
@@ -124,6 +130,12 @@ class AsyncStreamingTableScan:
         # State tracking
         self.next_snapshot_id: Optional[int] = None
         self._initialized = False
+
+        # Restore from consumer if consumer_id is set
+        if self.consumer_id:
+            existing_consumer = self._consumer_manager.consumer(self.consumer_id)
+            if existing_consumer:
+                self.next_snapshot_id = existing_consumer.next_snapshot
 
     async def stream(self) -> AsyncIterator[Plan]:
         """
@@ -251,6 +263,24 @@ class AsyncStreamingTableScan:
                     break
         finally:
             loop.close()
+
+    def notify_checkpoint_complete(self, next_snapshot_id: int) -> None:
+        """
+        Notify that a checkpoint has completed successfully.
+
+        If a consumer_id is set, this persists the read progress to the table's
+        consumer directory. This enables:
+        - Cross-process recovery of read progress
+        - Snapshot expiration awareness of which snapshots are still needed
+
+        Args:
+            next_snapshot_id: The next snapshot ID to read from
+        """
+        if self.consumer_id:
+            self._consumer_manager.reset_consumer(
+                self.consumer_id,
+                Consumer(next_snapshot=next_snapshot_id)
+            )
 
     def _start_prefetch(self, snapshot_id: int) -> None:
         """

@@ -595,6 +595,36 @@ for plan in scan.stream_sync():
     process(arrow_table)
 ```
 
+### Consumer Registration
+
+Consumer registration persists read progress to the table, enabling:
+- Cross-process recovery of read progress
+- Snapshot expiration awareness (prevents deletion of snapshots still needed by consumers)
+- Multiple independent consumers tracking their own progress
+
+```python
+# Create streaming read with consumer registration
+stream_builder = table.new_stream_read_builder()
+stream_builder.with_consumer_id("my-etl-job")
+stream_builder.with_poll_interval_ms(500)
+
+scan = stream_builder.new_streaming_scan()
+table_read = stream_builder.new_read()
+
+async def process_with_checkpointing():
+    async for plan in scan.stream():
+        # Process the data
+        arrow_table = table_read.to_arrow(plan.splits())
+        process(arrow_table)
+
+        # Persist progress to {table_path}/consumer/consumer-my-etl-job
+        scan.notify_checkpoint_complete(scan.next_snapshot_id)
+
+asyncio.run(process_with_checkpointing())
+```
+
+When restarting with the same consumer ID, reading automatically resumes from the last checkpointed position.
+
 ### Manual Position Control
 
 You can directly read and set the scan position via `next_snapshot_id`:
@@ -631,6 +661,7 @@ scan = stream_builder.new_streaming_scan()
 Key points about streaming reads:
 
 - **Poll Interval**: Controls how often to check for new snapshots (default: 1000ms)
+- **Consumer ID**: Unique identifier for persisting read progress
 - **Initial Scan**: First iteration returns all existing data, subsequent iterations return only new data
 - **Commit Types**: By default, only APPEND commits are processed; COMPACT and OVERWRITE are skipped
 
@@ -758,6 +789,6 @@ The following shows the supported features of Python Paimon compared to Java Pai
     - Reading and writing blob data
     - `with_shard` feature
     - Rollback feature
-    - Streaming reads
+    - Streaming reads with consumer registration
     - Parallel consumption with bucket filtering
     - Row kind support for changelog streams

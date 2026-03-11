@@ -61,6 +61,7 @@ class StreamReadBuilder:
         self._predicate: Optional[Predicate] = None
         self._projection: Optional[List[str]] = None
         self._poll_interval_ms: int = 1000
+        self._consumer_id: Optional[str] = None
         self._include_row_kind: bool = False
         self._bucket_filter: Optional[Callable[[int], bool]] = None
 
@@ -101,6 +102,25 @@ class StreamReadBuilder:
             This builder for method chaining
         """
         self._poll_interval_ms = poll_interval_ms
+        return self
+
+    def with_consumer_id(self, consumer_id: str) -> 'StreamReadBuilder':
+        """
+        Set the consumer ID for persisting read progress.
+
+        When a consumer ID is set, read progress is persisted to the table's
+        consumer directory at {table_path}/consumer/consumer-{id}. This enables:
+        - Cross-process recovery of read progress
+        - Snapshot expiration awareness of which snapshots are still needed
+        - Multiple independent consumers tracking their own progress
+
+        Args:
+            consumer_id: Unique identifier for this consumer
+
+        Returns:
+            This builder for method chaining
+        """
+        self._consumer_id = consumer_id
         return self
 
     def with_include_row_kind(self, include: bool = True) -> 'StreamReadBuilder':
@@ -183,6 +203,7 @@ class StreamReadBuilder:
             table=self.table,
             predicate=self._predicate,
             poll_interval_ms=self._poll_interval_ms,
+            consumer_id=self._consumer_id,
             bucket_filter=self._bucket_filter
         )
 
