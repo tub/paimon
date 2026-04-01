@@ -90,5 +90,8 @@ class BatchTableCommit(TableCommit):
 
 class StreamTableCommit(TableCommit):
 
+    def _check_committed(self) -> None:
+        pass
+
     def commit(self, commit_messages: List[CommitMessage], commit_identifier: int = BATCH_COMMIT_IDENTIFIER):
         self._commit(commit_messages, commit_identifier)
