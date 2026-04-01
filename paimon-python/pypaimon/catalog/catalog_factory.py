@@ -33,12 +33,31 @@ class CatalogFactory:
     }
 
     @staticmethod
+    def _get_database_catalog_class():
+        """Lazy import of DatabaseCatalog to avoid requiring sqlalchemy at module load time."""
+        try:
+            from pypaimon.catalog.db_catalog.database_catalog import DatabaseCatalog
+        except ImportError as e:
+            raise ImportError(
+                "sqlalchemy is required for database catalog. "
+                "Install it with: pip install pypaimon[database]"
+            ) from e
+        return DatabaseCatalog
+
+    @staticmethod
     def create(catalog_options: Dict) -> Catalog:
         identifier = catalog_options.get(CatalogOptions.METASTORE.key(), "filesystem")
+
+        if identifier == "database":
+            catalog_class = CatalogFactory._get_database_catalog_class()
+            return catalog_class(Options(catalog_options))
+
         catalog_class = CatalogFactory.CATALOG_REGISTRY.get(identifier)
         if catalog_class is None:
             raise ValueError("Unknown catalog identifier: {}. "
-                             "Available types: {}".format(identifier, list(CatalogFactory.CATALOG_REGISTRY.keys())))
+                             "Available types: {}".format(
+                                 identifier,
+                                 list(CatalogFactory.CATALOG_REGISTRY.keys()) + ["database"]))
         return catalog_class(
             CatalogContext.create_from_options(Options(catalog_options))) if identifier == "rest" else catalog_class(
                 Options(catalog_options))

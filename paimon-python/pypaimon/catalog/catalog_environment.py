@@ -19,6 +19,8 @@ limitations under the License.
 from typing import Optional
 
 from pypaimon.catalog.catalog_loader import CatalogLoader
+from pypaimon.catalog.catalog_lock import CatalogLockContext, CatalogLockFactory
+from pypaimon.catalog.lock import Lock
 from pypaimon.common.identifier import Identifier
 from pypaimon.snapshot.catalog_snapshot_commit import CatalogSnapshotCommit
 from pypaimon.snapshot.renaming_snapshot_commit import RenamingSnapshotCommit
@@ -33,12 +35,16 @@ class CatalogEnvironment:
             identifier: Optional[Identifier] = None,
             uuid: Optional[str] = None,
             catalog_loader: Optional[CatalogLoader] = None,
-            supports_version_management: bool = False
+            supports_version_management: bool = False,
+            lock_factory: Optional[CatalogLockFactory] = None,
+            lock_context: Optional[CatalogLockContext] = None,
     ):
         self.identifier = identifier
         self.uuid = uuid
         self.catalog_loader = catalog_loader
         self.supports_version_management = supports_version_management
+        self.lock_factory = lock_factory
+        self.lock_context = lock_context
 
     def snapshot_commit(self, snapshot_manager) -> Optional[SnapshotCommit]:
         """
@@ -56,10 +62,13 @@ class CatalogEnvironment:
             catalog = self.catalog_loader.load()
             return CatalogSnapshotCommit(catalog, self.identifier, self.uuid)
         else:
-            # Use file renaming-based snapshot commit
-            # In a full implementation, this would use a proper lock factory
-            # to create locks based on the catalog lock context
-            return RenamingSnapshotCommit(snapshot_manager)
+            # Use file renaming-based snapshot commit with optional lock
+            if self.lock_factory is not None and self.identifier is not None:
+                catalog_lock = self.lock_factory.create_lock(self.lock_context)
+                lock = Lock.from_catalog(catalog_lock, self.identifier)
+            else:
+                lock = Lock.empty()
+            return RenamingSnapshotCommit(snapshot_manager, lock)
 
     def catalog_table_rollback(self):
         """Create a TableRollback instance based on the catalog environment.
@@ -101,7 +110,9 @@ class CatalogEnvironment:
             identifier=identifier,
             uuid=self.uuid,
             catalog_loader=self.catalog_loader,
-            supports_version_management=self.supports_version_management
+            supports_version_management=self.supports_version_management,
+            lock_factory=self.lock_factory,
+            lock_context=self.lock_context,
         )
 
     @staticmethod
@@ -116,5 +127,7 @@ class CatalogEnvironment:
             identifier=None,
             uuid=None,
             catalog_loader=None,
-            supports_version_management=False
+            supports_version_management=False,
+            lock_factory=None,
+            lock_context=None,
         )

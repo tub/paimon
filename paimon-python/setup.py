@@ -70,6 +70,9 @@ setup(
             'pylance>=0.20,<1; python_version>="3.9"',
             'pylance>=0.10,<1; python_version>="3.8" and python_version<"3.9"'
         ],
+        'database': [
+            'sqlalchemy>=1.4',
+        ],
     },
     description="Apache Paimon Python API",
     long_description=long_description,

@@ -17,8 +17,9 @@
 ################################################################################
 
 import logging
-from typing import List
+from typing import List, Optional
 
+from pypaimon.catalog.lock import Lock
 from pypaimon.common.file_io import FileIO
 
 logger = logging.getLogger(__name__)
@@ -37,16 +38,17 @@ class RenamingSnapshotCommit(SnapshotCommit):
     But if the file system is object storage, we need additional lock protection.
     """
 
-    def __init__(self, snapshot_manager: SnapshotManager):
+    def __init__(self, snapshot_manager: SnapshotManager, lock: Optional[Lock] = None):
         """
         Initialize RenamingSnapshotCommit.
 
         Args:
             snapshot_manager: The snapshot manager to use
-            lock: The lock for synchronization
+            lock: The lock for synchronization (defaults to Lock.empty())
         """
         self.snapshot_manager = snapshot_manager
         self.file_io: FileIO = snapshot_manager.file_io
+        self.lock: Lock = lock if lock is not None else Lock.empty()
 
     def commit(self, snapshot: Snapshot, branch: str, statistics: List[PartitionStatistics]) -> bool:
         """
@@ -64,18 +66,22 @@ class RenamingSnapshotCommit(SnapshotCommit):
             Exception: If commit fails
         """
         new_snapshot_path = self.snapshot_manager.get_snapshot_path(snapshot.id)
-        if not self.file_io.exists(new_snapshot_path):
-            # Try to write atomically using the file IO
-            committed = self.file_io.try_to_write_atomic(new_snapshot_path, JSON.to_json(snapshot, indent=2))
-            if committed:
-                # Update the latest hint
-                self._commit_latest_hint(snapshot.id)
-                logger.info("Renaming snapshot commit succeeded, snapshot id %d", snapshot.id)
-            return committed
-        return False
+
+        def _do_commit():
+            if not self.file_io.exists(new_snapshot_path):
+                committed = self.file_io.try_to_write_atomic(
+                    new_snapshot_path, JSON.to_json(snapshot, indent=2))
+                if committed:
+                    self._commit_latest_hint(snapshot.id)
+                    logger.info("Renaming snapshot commit succeeded, snapshot id %d", snapshot.id)
+                return committed
+            return False
+
+        return self.lock.run_with_lock(_do_commit)
 
     def close(self):
         """Close the lock and release resources."""
+        self.lock.close()
 
     def _commit_latest_hint(self, snapshot_id: int):
         """
